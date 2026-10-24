@@ -373,4 +373,5 @@ class Run:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s", stream=sys.stdout)
+    logging.getLogger("telethon").setLevel(logging.WARNING)
     sys.exit(asyncio.run(Run().main()))
