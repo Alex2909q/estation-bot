@@ -25,6 +25,16 @@ def read_env() -> dict:
     return vals
 
 
+def normalize_phone(raw: str) -> str:
+    """'067 123-45-67' → '+380671234567'; '380…' → '+380…'; інші країни — як ввели, з '+'."""
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) == 10 and digits.startswith("0"):        # український формат 0XX XXX XX XX
+        digits = "38" + digits
+    elif len(digits) == 11 and digits.startswith("80"):     # 80XX XXX XX XX
+        digits = "3" + digits
+    return "+" + digits
+
+
 def main() -> None:
     cfg = read_env()
     api_id = os.getenv("API_ID") or cfg.get("API_ID", "")
@@ -35,12 +45,22 @@ def main() -> None:
     from telethon.sessions import StringSession
     from telethon.sync import TelegramClient
 
+    from telethon.errors import FloodWaitError, PhoneNumberInvalidError
+
     client = TelegramClient(StringSession(), int(api_id), api_hash, device_model="EStation GitHub")
-    client.start(
-        phone=lambda: input("Номер телефону вашого Telegram (+380…): ").strip(),
-        code_callback=lambda: input("Код, який прийшов у Telegram: ").strip(),
-        password=lambda: getpass.getpass("Пароль двоетапної перевірки (якщо є; символи не видно): "),
-    )
+    while True:
+        phone = normalize_phone(input("Номер телефону вашого Telegram (напр. +380671234567): "))
+        try:
+            client.start(
+                phone=phone,
+                code_callback=lambda: input("Код, який прийшов у Telegram: ").strip(),
+                password=lambda: getpass.getpass("Пароль двоетапної перевірки (якщо є; символи не видно): "),
+            )
+            break
+        except PhoneNumberInvalidError:
+            print(f"❌ Telegram не прийняв номер {phone}. Введіть повністю з кодом країни, напр. +380671234567.")
+        except FloodWaitError as e:
+            raise SystemExit(f"Забагато спроб. Telegram просить зачекати {e.seconds // 60 + 1} хв і спробувати знову.")
     me = client.get_me()
     secret = f"{api_id}:{api_hash}:{client.session.save()}"
     client.disconnect()
