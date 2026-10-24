@@ -22,7 +22,12 @@ class WebPost:
     text: str = ""
     date: str | None = None          # ISO-8601 з атрибута <time datetime>
     author: str | None = None        # підпис автора поста (якщо є)
+    photo: str | None = None         # URL першого фото / обкладинки відео
     parts: list = field(default_factory=list, repr=False)
+    raw: object = field(default=None, repr=False, compare=False)   # повідомлення Telethon (режим акаунта)
+
+
+_BG_URL = re.compile(r"background-image:\s*url\([\"']?([^\"')]+)")
 
 
 class NoWebPreview(Exception):
@@ -64,6 +69,12 @@ class _Parser(HTMLParser):
                 self.cur.date = a["datetime"]
             elif tag == "span" and "tgme_widget_message_from_author" in classes:
                 self.in_author = True
+            elif (self.cur.photo is None and tag in ("a", "i") and a.get("style")
+                  and ("tgme_widget_message_photo_wrap" in classes or "tgme_widget_message_video_thumb" in classes)):
+                m = _BG_URL.search(a["style"])
+                if m:
+                    url = m.group(1)
+                    self.cur.photo = "https:" + url if url.startswith("//") else url
 
     def handle_endtag(self, tag):
         if tag == "div":

@@ -163,7 +163,7 @@ class AccountReader:
         if last_id:
             async for m in self.client.iter_messages(entity, min_id=last_id, reverse=True, limit=300):
                 if not m.action:
-                    posts.append(web_source.WebPost(m.id, m.message or "", m.date.isoformat()))
+                    posts.append(web_source.WebPost(m.id, m.message or "", m.date.isoformat(), raw=m))
         else:
             latest = await self.client.get_messages(entity, limit=1)
             posts = [web_source.WebPost(m.id, m.message or "", m.date.isoformat()) for m in latest]
@@ -180,6 +180,7 @@ class Run:
         self.excludes = core.load_keywords(EXCLUDE_FILE)
         self.channels = load_channels()
         self.problems: dict[str, str] = {}
+        self.photo_bytes: dict[str, bytes] = {}   # фото з каналів без веб-версії (лише в пам'яті)
         self.summary: list[str] = []           # підсумок запуску (видно в анотаціях GitHub)
         self.sent = 0
         self.creds = account_creds()
@@ -300,10 +301,18 @@ class Run:
                 continue
             self.state["seen"][fp] = time.time()
             link = core.message_link(p.id, username, 0, True) if username else None
+            pid = f"{key}/{p.id}"
+            if reader is not None and getattr(p.raw, "photo", None):
+                try:                                  # фото з каналу без веб-версії — качаємо через акаунт
+                    self.photo_bytes[pid] = await reader.client.download_media(p.raw, file=bytes)
+                except Exception as e:
+                    log.info("%s: фото не завантажено (%s)", pid, e)
+            has_photo = bool(p.photo or self.photo_bytes.get(pid))
             text = core.format_notification(group_title=title, text=p.text, link=link, matched=matched,
                                             author_html=html.escape(p.author) if p.author else None,
-                                            when=fmt_time(p.date) if p.date else "")
-            self.state["pending"].append([text, link])
+                                            when=fmt_time(p.date) if p.date else "",
+                                            text_limit=550 if has_photo else 700)   # підпис до фото ≤ 1024
+            self.state["pending"].append([text, link, p.photo, pid])
             self.state["found_total"] += 1
             found += 1
             log.info("🔋 %s: %s", title, link or p.id)
@@ -328,12 +337,21 @@ class Run:
                 await self.bot.send(self.owner, f"⚠️ {html.escape(key)}: {html.escape(problem)}")
                 self.state["warned"][key] = today
         queue, self.state["pending"] = self.state["pending"], []
-        for text, link in queue:
-            ok, res = await self.bot.send(self.owner, text, link)
+        for entry in queue:
+            text, link, photo_url, pid = (list(entry) + [None, None])[:4]
+            photo_bytes = self.photo_bytes.get(pid) if pid else None
+            ok = False
+            if photo_url or photo_bytes:
+                ok, res = await self.bot.send_photo(self.owner, text, photo_url=photo_url,
+                                                    photo_bytes=photo_bytes, button_url=link)
+                if not ok:
+                    log.info("Фото не пройшло (%s) — надсилаю текстом", res.get("description"))
+            if not ok:
+                ok, res = await self.bot.send(self.owner, text, link)
             self.sent += 1 if ok else 0
             if not ok:
                 log.warning("Не вдалося надіслати: %s", res.get("description"))
-                self.state["pending"].append([text, link])
+                self.state["pending"].append([text, link, photo_url, pid])
 
     def keepalive(self) -> None:
         """GitHub вимикає розклад у публічних репозиторіях після 60 днів без активності.

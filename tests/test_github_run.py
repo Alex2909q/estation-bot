@@ -30,7 +30,7 @@ def fake_fetch_page(channel, before=None, timeout=20):
     return f"Канал {channel}", []
 
 
-sent, updates = [], []
+sent, updates, photos = [], [], []
 
 
 class FakeBot:
@@ -46,6 +46,13 @@ class FakeBot:
 
     async def send(self, chat_id, text, button_url=None):
         sent.append((chat_id, text, button_url))
+        return True, {"ok": True}
+
+    async def send_photo(self, chat_id, caption, photo_url=None, photo_bytes=None, button_url=None):
+        photos.append((photo_url, len(caption)))
+        if photo_url and "fail" in photo_url:
+            return False, {"ok": False, "description": "bad photo"}
+        sent.append((chat_id, caption, button_url))
         return True, {"ok": True}
 
 
@@ -83,6 +90,9 @@ assert any("dealradarua" in t and "TG_SESSION" in t for t in texts)
 assert any("Підключено" in t for t in texts)
 assert all(s[0] == 777 for s in sent)
 print("run2 OK:", len(sent), "messages ->", links)
+assert photos and photos[0][0] == "https://cdn4.telesco.pe/file/test2439.jpg", photos
+assert all(n <= 1024 for _, n in photos), photos          # підпис до фото в межах ліміту Telegram
+print("photo OK:", photos)
 
 # Запуск 3: нічого нового → нічого не шлемо, кеш не перезаписуємо
 n = len(sent)

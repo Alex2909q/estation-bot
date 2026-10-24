@@ -124,7 +124,8 @@ def shorten(text: str, limit: int = 700) -> str:
 
 
 def format_notification(*, group_title: str, text: str, link: str | None,
-                        matched: list[str], author_html: str | None, when: str) -> str:
+                        matched: list[str], author_html: str | None, when: str,
+                        text_limit: int = 700) -> str:
     """HTML-текст сповіщення для Bot API (parse_mode=HTML)."""
     lines = ["🔋 <b>Нове оголошення: зарядна станція</b>",
              f"👥 {html.escape(group_title)}"]
@@ -133,7 +134,7 @@ def format_notification(*, group_title: str, text: str, link: str | None,
     lines.append(f"🕒 {html.escape(when)}")
     lines.append(f"🔑 <i>{html.escape(', '.join(matched[:5]))}</i>")
     lines.append("")
-    lines.append(html.escape(shorten(text)))
+    lines.append(html.escape(shorten(text, text_limit)))
     lines.append("")
     if link:
         lines.append(f'🔗 <a href="{html.escape(link, quote=True)}">{html.escape(link)}</a>')

@@ -71,3 +71,57 @@ class BotAPI:
                 return False, res               # повтор не допоможе
             await asyncio.sleep(3 * (attempt + 1))
         return False, res
+
+    # ---------- фото ----------
+    def _multipart_sync(self, method: str, fields: dict, file_field: str, file_bytes: bytes,
+                        http_timeout: float) -> dict:
+        boundary = "----estation" + os.urandom(8).hex()
+        body = bytearray()
+        for name, value in fields.items():
+            body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                     f"{value}\r\n").encode("utf-8")
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
+                 f"filename=\"photo.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n").encode("utf-8")
+        body += file_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        req = urllib.request.Request(self.base + method, data=bytes(body),
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=http_timeout, context=self.ssl) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return json.loads(raw)
+            except ValueError:
+                return {"ok": False, "error_code": e.code, "description": raw.decode("utf-8", "replace")[:300]}
+
+    async def send_photo(self, chat_id, caption: str, photo_url: str | None = None,
+                         photo_bytes: bytes | None = None, button_url: str | None = None) -> tuple[bool, dict]:
+        """Фото з підписом (до 1024 символів). Якщо не вийшло — повертає False, і
+        викликач надсилає звичайне текстове повідомлення."""
+        markup = {"inline_keyboard": [[{"text": "Відкрити оголошення", "url": button_url}]]} if button_url else None
+        res: dict = {}
+        for attempt in range(3):
+            try:
+                if photo_bytes:
+                    fields = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
+                    if markup:
+                        fields["reply_markup"] = json.dumps(markup)
+                    res = await asyncio.to_thread(self._multipart_sync, "sendPhoto", fields, "photo",
+                                                  photo_bytes, 60)
+                else:
+                    params = {"chat_id": chat_id, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
+                    if markup:
+                        params["reply_markup"] = markup
+                    res = await self.call("sendPhoto", params, http_timeout=60)
+            except Exception as e:
+                log.warning("Бот: фото не надіслано (%s), повтор…", e)
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            if res.get("ok"):
+                return True, res
+            if res.get("error_code") == 429:
+                await asyncio.sleep(int(res.get("parameters", {}).get("retry_after", 5)) + 1)
+                continue
+            return False, res                    # погане фото/підпис — перейдемо на текст
+        return False, res
