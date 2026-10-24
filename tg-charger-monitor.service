@@ -1,0 +1,22 @@
+# Автозапуск на Linux-сервері (VPS).
+# 1) Спершу один раз запустіть ./start.sh вручну й увійдіть у акаунт (номер + код).
+# 2) Замініть /opt/tg-charger-monitor і USER на свої значення.
+# 3) sudo cp tg-charger-monitor.service /etc/systemd/system/
+#    sudo systemctl daemon-reload && sudo systemctl enable --now tg-charger-monitor
+#    Логи: journalctl -u tg-charger-monitor -f
+
+[Unit]
+Description=Telegram: моніторинг оголошень про зарядні станції
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=USER
+WorkingDirectory=/opt/tg-charger-monitor
+ExecStart=/opt/tg-charger-monitor/.venv/bin/python bot.py
+Restart=always
+RestartSec=15
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,56 @@
+name: Monitor
+
+# Перевірка каналів приблизно кожні 5 хвилин (частіше GitHub не запускає;
+# під навантаженням запуск може запізнюватися на кілька хвилин — пости не губляться).
+on:
+  schedule:
+    - cron: "2-59/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write        # щоб раз на день продовжувати розклад (інакше GitHub вимкне його через 60 днів)
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      NOTIFY_CHAT_ID: ${{ secrets.NOTIFY_CHAT_ID }}
+      TG_SESSION: ${{ secrets.TG_SESSION }}
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
+      GITHUB_TOKEN: ${{ github.token }}
+      TIMEZONE: Europe/Kyiv
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Telethon (only when TG_SESSION is set)
+        if: env.TG_SESSION != ''
+        run: pip install -q "telethon>=1.36"
+
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: Check channels
+        run: python github_run.py
+
+      - name: Save state
+        if: always() && hashFiles('state/changed') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: state-${{ github.run_id }}-${{ github.run_attempt }}

@@ -1,0 +1,7 @@
+# Канали/групи для перевірки — по одному на рядок (@назва або посилання t.me/...).
+# Після # — коментар.
+@ZBSkitai
+@technorika
+@dobrymao_UA
+@egogorushka88
+@dealradarua      # без веб-версії: на GitHub читається лише з секретом TG_SESSION
