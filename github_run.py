@@ -5,7 +5,7 @@
   BOT_TOKEN       (обов'язково) токен бота від @BotFather
   NOTIFY_CHAT_ID  (необов'язково) куди слати; інакше — тому, хто першим натисне Start у боті
   TG_SESSION, API_ID, API_HASH  (необов'язково) читати канали через ваш акаунт —
-                  потрібно для каналів без веб-версії (напр. @dealradarua). Див. make_session.py
+                  потрібно для каналів без веб-версії (@dobrymao_UA, @dealradarua). Див. make_session.command
 
 Без TG_SESSION канали читаються з публічної веб-версії t.me/s/<канал> — акаунт не потрібен.
 Стан (на чому зупинились, хто власник) лежить у state/state.json і зберігається кешем Actions.
@@ -72,7 +72,7 @@ def load_state() -> dict:
         st = {}
     for k, v in {"last_ids": {}, "seen": {}, "pending": [], "titles": {}, "found_total": 0,
                  "owner_chat_id": None, "update_offset": None, "announced": False,
-                 "warned": {}, "keepalive": ""}.items():
+                 "warned": {}, "keepalive": "", "peers": {}}.items():
         st.setdefault(k, v)
     return st
 
@@ -107,26 +107,58 @@ def fmt_time(iso_or_dt) -> str:
 
 # ------------------------------------------------------------ джерела ---
 
+def account_creds():
+    """TG_SESSION = "api_id:api_hash:рядок_сесії" (так його створює make_session.py)
+    або лише рядок сесії + окремі секрети API_ID і API_HASH."""
+    raw = env("TG_SESSION")
+    if not raw:
+        return None
+    parts = raw.split(":", 2)
+    if len(parts) == 3 and parts[0].isdigit():
+        return int(parts[0]), parts[1], parts[2]
+    if env("API_ID").isdigit() and env("API_HASH"):
+        return int(env("API_ID")), env("API_HASH"), raw
+    return None
+
+
 class AccountReader:
     """Читання через акаунт користувача (Telethon + рядок сесії)."""
 
-    def __init__(self):
+    def __init__(self, creds, peers: dict):
         from telethon import TelegramClient
         from telethon.sessions import StringSession
-        self.client = TelegramClient(StringSession(env("TG_SESSION")), int(env("API_ID")), env("API_HASH"))
+        api_id, api_hash, session = creds
+        self.client = TelegramClient(StringSession(session), api_id, api_hash,
+                                     device_model="EStation GitHub")
+        self.peers = peers          # кеш id/access_hash між запусками — щоб не ловити ліміти Telegram
 
     async def __aenter__(self):
         await self.client.connect()
         if not await self.client.is_user_authorized():
-            raise RuntimeError("TG_SESSION недійсна — створіть нову через make_session.py")
+            await self.client.disconnect()
+            raise RuntimeError("TG_SESSION недійсна або відкликана — створіть нову через make_session")
         return self
 
     async def __aexit__(self, *exc):
         await self.client.disconnect()
 
-    async def fetch_new(self, ref: str, last_id: int):
+    async def _entity(self, ref: str):
+        from telethon.tl.types import InputPeerChannel
+        key = str(core.parse_group_ref(ref))
+        cached = self.peers.get(key)
+        if cached:
+            return InputPeerChannel(cached[0], cached[1]), cached[2]
         entity = await self.client.get_entity(core.parse_group_ref(ref))
         username = core.primary_username(entity)
+        if getattr(entity, "access_hash", None) is not None:
+            self.peers[key] = [entity.id, entity.access_hash, username]
+        return entity, username
+
+    async def fetch_new(self, ref: str, last_id: int):
+        entity, username = await self._entity(ref)
+        title = None
+        if not isinstance(entity, (str, int)) and hasattr(entity, "title"):
+            title = entity.title
         posts = []
         if last_id:
             async for m in self.client.iter_messages(entity, min_id=last_id, reverse=True, limit=300):
@@ -135,7 +167,7 @@ class AccountReader:
         else:
             latest = await self.client.get_messages(entity, limit=1)
             posts = [web_source.WebPost(m.id, m.message or "", m.date.isoformat()) for m in latest]
-        return getattr(entity, "title", None), username, entity, posts
+        return title, username, entity, posts
 
 
 # ------------------------------------------------------------ основне ---
@@ -147,7 +179,8 @@ class Run:
         self.keywords = core.load_keywords(KEYWORDS_FILE)
         self.excludes = core.load_keywords(EXCLUDE_FILE)
         self.channels = load_channels()
-        self.account = bool(env("TG_SESSION") and env("API_ID") and env("API_HASH"))
+        self.creds = account_creds()
+        self.account = self.creds is not None
         self.problems: dict[str, str] = {}
 
     @property
@@ -198,12 +231,17 @@ class Run:
     # ----- перевірка каналів -----
     async def check_all(self) -> None:
         if self.account:
-            async with AccountReader() as reader:
-                for ref in self.channels:
-                    await self.check_one(ref, reader)
-        else:
-            for ref in self.channels:
-                await self.check_one(ref, None)
+            try:
+                async with AccountReader(self.creds, self.state["peers"]) as reader:
+                    for ref in self.channels:
+                        await self.check_one(ref, reader)
+                return
+            except Exception as e:                  # сесія зламалась — працюємо хоча б через веб
+                log.warning("Акаунт недоступний (%s) — читаю через веб-версію.", e)
+                self.problems["TG_SESSION"] = f"не працює: {e}"
+                self.account = False
+        for ref in self.channels:
+            await self.check_one(ref, None)
 
     async def check_one(self, ref: str, reader) -> None:
         target = core.parse_group_ref(ref)

@@ -8,3 +8,4 @@ monitor.log*
 __pycache__/
 background.log
 state/
+.venv-session/

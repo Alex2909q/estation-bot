@@ -2,7 +2,7 @@
 
 Перевіряє Telegram-канали знижок і, коли з'являється пост про зарядну станцію
 (EcoFlow, Bluetti, OSCAL, IEE, «зарядна станція», «1800W / 1024Wh» тощо), бот
-@EStation_bot надсилає вам текст і **пряме посилання на пост**.
+@EstationC_bot надсилає вам текст і **пряме посилання на пост**.
 
 ```
 🔋 Нове оголошення: зарядна станція
@@ -29,22 +29,25 @@
    У приватному безкоштовно лише 2000 хв/місяць — цього вистачить на перевірку раз на 30 хв.
    Токени в публічному репозиторії ніхто не бачить: вони зберігаються як Secrets.
 2. **Secrets.** Settings → Secrets and variables → Actions → **New repository secret**:
-   - `BOT_TOKEN` — токен @EStation_bot від @BotFather (обов'язково).
-3. Відкрийте @EStation_bot у Telegram і натисніть **Start**.
+   - `BOT_TOKEN` — токен @EstationC_bot від @BotFather (обов'язково).
+3. Відкрийте @EstationC_bot у Telegram і натисніть **Start**.
 4. Вкладка **Actions** → **Monitor** → **Run workflow**. Через хвилину бот напише
    «✅ Моніторинг на GitHub запущено». Далі все працює саме.
 
 Команда в боті: `/status` — стан і список каналів (відповідь приходить з наступною перевіркою, до 5 хв).
 
-### Канали без веб-версії (@dealradarua)
+### Канали, які без акаунта не читаються (@dobrymao_UA, @dealradarua)
 
-Без входу в акаунт бот читає канали через їхню публічну веб-версію `t.me/s/<канал>`.
-У @dealradarua її вимкнено, тому він читається лише через ваш акаунт:
+Решту каналів бот читає через їхню публічну веб-версію `t.me/s/<канал>`, без входу в акаунт.
+У цих двох її вимкнено, тому вони читаються лише через ваш акаунт — один секрет `TG_SESSION`:
 
-1. На Mac у папці з ботом виконайте `.venv/bin/python make_session.py` і увійдіть (номер + код).
-2. Додайте ще три секрети: `TG_SESSION` (рядок, який виведе скрипт), `API_ID`, `API_HASH`.
+1. На Mac у папці з ботом клацніть **правою кнопкою** на `make_session.command` → **Відкрити**.
+2. Введіть номер телефону й код із Telegram. Секрет автоматично скопіюється в буфер обміну.
+3. Settings → Secrets and variables → Actions → New repository secret: Name `TG_SESSION`, Secret — Cmd+V.
 
+Поки `TG_SESSION` немає, бот раз на день нагадує, які канали пропускає.
 `TG_SESSION` — це доступ до вашого акаунта: зберігайте лише в Secrets.
+Відкликати: Telegram → Налаштування → Пристрої → «EStation GitHub» → Завершити.
 
 ---
 
@@ -83,7 +86,7 @@ OSCAL, IEE/IEETek, OUKITEL P, AFERIY, ABOK, Necespow, SOLARPLAY, Allpowers, DJI 
 | `bot.py` | постійна робота на комп'ютері (через акаунт, щохвилини) |
 | `core.py`, `botapi.py` | пошук ключових слів, формат сповіщень, Telegram Bot API |
 | `channels.txt`, `keywords.txt`, `exclude.txt` | що перевіряти й що шукати |
-| `make_session.py` | рядок сесії TG_SESSION для GitHub |
+| `make_session.command` / `make_session.py` | створює секрет TG_SESSION (Mac) |
 | `start.command`, `autostart-*.command` | запуск на Mac |
 | `list_chats.py` | список ваших груп і каналів з ID |
 | `tests/` | перевірки на справжній розмітці каналу |

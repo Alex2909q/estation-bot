@@ -2,6 +2,6 @@
 # Після # — коментар.
 @ZBSkitai
 @technorika
-@dobrymao_UA
+@dobrymao_UA      # без веб-версії: на GitHub читається лише з секретом TG_SESSION
 @egogorushka88
 @dealradarua      # без веб-версії: на GitHub читається лише з секретом TG_SESSION
