@@ -181,6 +181,13 @@ class Run:
         self.channels = load_channels()
         self.creds = account_creds()
         self.account = self.creds is not None
+        raw = env("TG_SESSION")
+        if raw and not self.account:                 # вміст секрету не показуємо — лише форму
+            log.warning("TG_SESSION має неочікуваний формат (довжина %s, двокрапок %s, "
+                        "перша частина — %s). Очікується api_id:api_hash:сесія від make_session.command.",
+                        len(raw), raw.count(":"),
+                        "число" if raw.split(":")[0].isdigit() else "не число")
+            self.problems["TG_SESSION"] = "неправильний формат — створіть заново через make_session.command"
         self.problems: dict[str, str] = {}
 
     @property
