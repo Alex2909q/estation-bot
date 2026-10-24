@@ -19,8 +19,8 @@ power station*
 re:(?<!\d)(?:[2-9]\d{2}|[1-9]\d{3})\s*(?:wh|вт\s*[·*.\-]?\s*год|втг)(?!\w)  # ємність у Wh
 
 # --- Бренди (погоджений перелік) ---
-# Лише станції — ловимо за назвою бренду:
-re:eco\s*flow(?!\s*rapid)  # EcoFlow
+# Будь-яка згадка бренду — сповіщення, незалежно від решти тексту.
+eco flow
 екофлоу
 экофлоу
 екофлов
@@ -30,21 +30,20 @@ bluetti
 блутті
 jackery
 джекері
+anker
 allpowers
+fossibot
 tallpower
 vtoman
 necespow*
 abok
 aferiy
 solarplay
-re:fossibot(?!\s*f1\d{2}(?!\d))  # Fossibot
-
-# Бренди, що продають і інше (павербанки, зарядки, смартфони) — лише лінійки станцій:
-re:anker\s*(?:solix|(?:\d{3}\s*)?power\s*house)  # Anker SOLIX
-re:oscal\s*(?:power\s*)?max  # OSCAL Max
-re:oukitel\s*b?p\d{3,4}  # OUKITEL P
-re:iee(?:tek)?\s*p\d{3,4}  # IEE / IEETek P
-re:newsmy[^\n]{0,200}?\d{3,4}\s*wh|\d{3,4}\s*wh[^\n]{0,200}?newsmy  # Newsmy
+oscal
+oukitel
+newsmy
+ieetek
+iee
 
 # --- Популярні моделі ---
 delta 2*

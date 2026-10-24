@@ -70,12 +70,10 @@
 - `ЕсоFlow` з кириличними літерами теж розпізнається;
 - `re:...` — регулярний вираз; після двох пробілів і `#` — підпис для сповіщення.
 
-Відстежуються погоджені бренди: EcoFlow, Bluetti, Jackery, Anker (лише SOLIX/PowerHouse), Allpowers,
-Fossibot, TALLPOWER, Vtoman, Necespow, ABOK, AFERIY, SOLARPLAY, OSCAL (лише Max/PowerMax),
-OUKITEL (лише серія P/BP), IEE/IEETek (серія P), Newsmy (лише з ємністю у Wh) і їхні моделі —
-плюс загальні назви («зарядна станція», «power station») та ємність від 200 Wh.
-Павербанки, зарядки, кабелі, смартфони OSCAL/Oukitel/Fossibot не спрацьовують
-(перевірка: `python tests/test_keywords.py`).
+Відстежуються погоджені бренди — за будь-якої згадки, незалежно від решти тексту:
+EcoFlow, Bluetti, Jackery, Anker, Allpowers, Fossibot, TALLPOWER, Vtoman, Necespow, ABOK, AFERIY,
+SOLARPLAY, OSCAL, OUKITEL, Newsmy, IEETek / IEE — плюс загальні назви («зарядна станція»,
+«power station») та ємність від 200 Wh (перевірка: `python tests/test_keywords.py`).
 
 `exclude.txt` — слова, з якими пост ігнорується (наприклад, `куплю`).
 
