@@ -179,6 +179,7 @@ class Run:
         self.keywords = core.load_keywords(KEYWORDS_FILE)
         self.excludes = core.load_keywords(EXCLUDE_FILE)
         self.channels = load_channels()
+        self.problems: dict[str, str] = {}
         self.creds = account_creds()
         self.account = self.creds is not None
         raw = env("TG_SESSION")
@@ -188,7 +189,6 @@ class Run:
                         len(raw), raw.count(":"),
                         "число" if raw.split(":")[0].isdigit() else "не число")
             self.problems["TG_SESSION"] = "неправильний формат — створіть заново через make_session.command"
-        self.problems: dict[str, str] = {}
 
     @property
     def owner(self):
