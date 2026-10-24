@@ -70,9 +70,12 @@
 - `ЕсоFlow` з кириличними літерами теж розпізнається;
 - `re:...` — регулярний вираз; після двох пробілів і `#` — підпис для сповіщення.
 
-Уже є: загальні назви (укр/рос/англ), ємність від 200 Wh, бренди (EcoFlow, Bluetti, Jackery,
-OSCAL, IEE/IEETek, OUKITEL P, AFERIY, ABOK, Necespow, SOLARPLAY, Allpowers, DJI Power тощо)
-і популярні моделі. Павербанки, кабелі, смартфони OSCAL/Oukitel не спрацьовують.
+Відстежуються погоджені бренди: EcoFlow, Bluetti, Jackery, Anker (лише SOLIX/PowerHouse), Allpowers,
+Fossibot, TALLPOWER, Vtoman, Necespow, ABOK, AFERIY, SOLARPLAY, OSCAL (лише Max/PowerMax),
+OUKITEL (лише серія P/BP), IEE/IEETek (серія P), Newsmy (лише з ємністю у Wh) і їхні моделі —
+плюс загальні назви («зарядна станція», «power station») та ємність від 200 Wh.
+Павербанки, зарядки, кабелі, смартфони OSCAL/Oukitel/Fossibot не спрацьовують
+(перевірка: `python tests/test_keywords.py`).
 
 `exclude.txt` — слова, з якими пост ігнорується (наприклад, `куплю`).
 

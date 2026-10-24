@@ -18,9 +18,9 @@ power station*
 # Павербанки (mAh) і батареї ноутбуків (<100 Wh) сюди не потрапляють.
 re:(?<!\d)(?:[2-9]\d{2}|[1-9]\d{3})\s*(?:wh|вт\s*[·*.\-]?\s*год|втг)(?!\w)  # ємність у Wh
 
-# --- Бренди ---
-ecoflow
-eco flow
+# --- Бренди (погоджений перелік) ---
+# Лише станції — ловимо за назвою бренду:
+re:eco\s*flow(?!\s*rapid)  # EcoFlow
 екофлоу
 экофлоу
 екофлов
@@ -30,22 +30,21 @@ bluetti
 блутті
 jackery
 джекері
-anker solix
-zendure
 allpowers
-dabbsson
-dji power*
-re:oukitel\s*p\d{3,4}  # OUKITEL P
-growatt infinity*
+tallpower
 vtoman
-fossibot
-# Бренди з каналів @ZBSkitai, @technorika, @dobrymao_UA (OSCAL і OUKITEL — лише станції, не телефони)
-re:oscal\s*(?:power\s*)?max  # OSCAL Max
-re:iee(?:tek)?\s*p\d{3,4}  # IEE / IEETek P
-aferiy
-abok
 necespow*
+abok
+aferiy
 solarplay
+re:fossibot(?!\s*f1\d{2}(?!\d))  # Fossibot
+
+# Бренди, що продають і інше (павербанки, зарядки, смартфони) — лише лінійки станцій:
+re:anker\s*(?:solix|(?:\d{3}\s*)?power\s*house)  # Anker SOLIX
+re:oscal\s*(?:power\s*)?max  # OSCAL Max
+re:oukitel\s*b?p\d{3,4}  # OUKITEL P
+re:iee(?:tek)?\s*p\d{3,4}  # IEE / IEETek P
+re:newsmy[^\n]{0,200}?\d{3,4}\s*wh|\d{3,4}\s*wh[^\n]{0,200}?newsmy  # Newsmy
 
 # --- Популярні моделі ---
 delta 2*
