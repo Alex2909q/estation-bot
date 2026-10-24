@@ -4,7 +4,7 @@ name: Monitor
 # під навантаженням запуск може запізнюватися на кілька хвилин — пости не губляться).
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0/5 * * * *"
   workflow_dispatch:
 
 permissions:
