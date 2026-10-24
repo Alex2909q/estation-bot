@@ -180,6 +180,8 @@ class Run:
         self.excludes = core.load_keywords(EXCLUDE_FILE)
         self.channels = load_channels()
         self.problems: dict[str, str] = {}
+        self.summary: list[str] = []           # підсумок запуску (видно в анотаціях GitHub)
+        self.sent = 0
         self.creds = account_creds()
         self.account = self.creds is not None
         raw = env("TG_SESSION")
@@ -307,6 +309,7 @@ class Run:
             log.info("🔋 %s: %s", title, link or p.id)
         self.state["last_ids"][key] = max(newest, last)
         log.info("%s: нових постів %s, оголошень %s", title, len(posts), found)
+        self.summary.append(f"{key}: +{len([p for p in posts if p.id > last])} постів, {found} оголошень")
 
     async def flush(self) -> None:
         if not self.owner:
@@ -327,6 +330,7 @@ class Run:
         queue, self.state["pending"] = self.state["pending"], []
         for text, link in queue:
             ok, res = await self.bot.send(self.owner, text, link)
+            self.sent += 1 if ok else 0
             if not ok:
                 log.warning("Не вдалося надіслати: %s", res.get("description"))
                 self.state["pending"].append([text, link])
@@ -365,6 +369,9 @@ class Run:
         await self.flush()
         self.keepalive()
         save_state(self.state, before)
+        parts = self.summary + [f"{k}: {v}" for k, v in self.problems.items()]
+        parts.append(f"надіслано {self.sent}, у черзі {len(self.state['pending'])}")
+        print("::notice title=EStation::" + " | ".join(parts).replace("\n", " "))
         if not self.owner:
             log.warning("Відкрийте @%s у Telegram і натисніть Start — тоді почнуть надходити сповіщення.",
                         me["result"]["username"])
