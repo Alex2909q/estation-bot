@@ -196,6 +196,7 @@ class Run:
         self.summary: list[str] = []           # підсумок запуску (видно в анотаціях GitHub)
         self.sent = 0
         self.duplicates = 0
+        self.sent_heads: list[str] = []
         self.sent_with_photo = 0
         self.photo_errors: list[str] = []
         self.creds = account_creds()
@@ -441,6 +442,9 @@ class Run:
                 ok, res = await self.bot.send(self.owner, text, link)
             self.sent += 1 if ok else 0
             self.sent_with_photo += 1 if with_photo else 0
+            if ok:                                    # перші 2 рядки сповіщення — у підсумок запуску
+                head = [re.sub(r"<[^>]+>", "", l) for l in text.splitlines()[:2]]
+                self.sent_heads.append(html.unescape(" / ".join(head)))
             if not ok:
                 log.warning("Не вдалося надіслати: %s", res.get("description"))
                 self.state["pending"].append([text, link, photo_url, pid])
@@ -488,6 +492,7 @@ class Run:
         parts += [f"фото — {e}" for e in self.photo_errors[:3]]
         if self.duplicates:
             parts.append(f"дублікатів пропущено {self.duplicates}")
+        parts += [f"→ {h}" for h in self.sent_heads[:5]]
         print("::notice title=EStation::" + " | ".join(parts).replace("\n", " "))
         if not self.owner:
             log.warning("Відкрийте @%s у Telegram і натисніть Start — тоді почнуть надходити сповіщення.",
