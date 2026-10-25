@@ -309,7 +309,7 @@ class Run:
 
         if title:
             self.state["titles"][key] = title
-        title = title or key
+        title = title or self.state["titles"].get(key) or key
         if not posts:
             log.info("%s: нових постів немає", title)
             return
