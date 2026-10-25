@@ -72,7 +72,7 @@ def load_state() -> dict:
         st = {}
     for k, v in {"last_ids": {}, "seen": {}, "pending": [], "titles": {}, "found_total": 0,
                  "owner_chat_id": None, "update_offset": None, "announced": False,
-                 "warned": {}, "keepalive": "", "peers": {}}.items():
+                 "warned": {}, "keepalive": "", "peers": {}, "web_blocked": []}.items():
         st.setdefault(k, v)
     return st
 
@@ -255,21 +255,39 @@ class Run:
                 f"Знайдено всього: {self.state['found_total']}\n\n" + "\n".join(lines))
 
     # ----- перевірка каналів -----
-    async def check_all(self) -> None:
-        if self.account:
-            try:
-                async with AccountReader(self.creds, self.state["peers"]) as reader:
-                    for ref in self.channels:
-                        await self.check_one(ref, reader)
-                return
-            except Exception as e:                  # сесія зламалась — працюємо хоча б через веб
-                log.warning("Акаунт недоступний (%s) — читаю через веб-версію.", e)
-                self.problems["TG_SESSION"] = f"не працює: {e}"
-                self.account = False
-        for ref in self.channels:
-            await self.check_one(ref, None)
+    def _web_readable(self, ref: str) -> bool:
+        """Публічний @канал, у якого веб-версія t.me/s/ ще не виявилась вимкненою."""
+        target = core.parse_group_ref(ref)
+        return (isinstance(target, str) and not target.startswith("http")
+                and str(target) not in self.state["web_blocked"])
 
-    async def check_one(self, ref: str, reader) -> None:
+    async def check_all(self) -> None:
+        # 1) Відкриті канали — через веб-версію, без входу в акаунт (менше навантаження на акаунт).
+        need_account = []
+        for ref in self.channels:
+            if not self._web_readable(ref):
+                need_account.append(ref)
+            elif await self.check_one(ref, None) == "noweb":
+                self.state["web_blocked"].append(str(core.parse_group_ref(ref)))
+                need_account.append(ref)
+        if not need_account:
+            return
+        # 2) Закриті канали — через акаунт (один вхід на всю перевірку).
+        if not self.account:
+            for ref in need_account:
+                key = str(core.parse_group_ref(ref))
+                self.problems[key] = "немає веб-версії, потрібен TG_SESSION"
+                log.warning("@%s: у каналу вимкнена веб-версія — його можна читати лише з TG_SESSION.", key)
+            return
+        try:
+            async with AccountReader(self.creds, self.state["peers"]) as reader:
+                for ref in need_account:
+                    await self.check_one(ref, reader)
+        except Exception as e:
+            log.warning("Акаунт недоступний (%s)", e)
+            self.problems["TG_SESSION"] = f"не працює: {e}"
+
+    async def check_one(self, ref: str, reader) -> str | None:
         target = core.parse_group_ref(ref)
         key = str(target)
         last = int(self.state["last_ids"].get(key, 0))
@@ -282,9 +300,8 @@ class Run:
                 title, posts = await asyncio.to_thread(web_source.fetch_new, target, last)
                 username = target
         except web_source.NoWebPreview:
-            self.problems[key] = "немає веб-версії, потрібен TG_SESSION"
-            log.warning("@%s: у каналу вимкнена веб-версія — його можна читати лише з TG_SESSION.", key)
-            return
+            log.info("@%s: веб-версія вимкнена — читатиму через акаунт", key)
+            return "noweb"
         except Exception as e:
             self.problems[key] = "помилка читання"
             log.warning("%s: не вдалося прочитати (%s)", ref, e)

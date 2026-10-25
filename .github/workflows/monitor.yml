@@ -1,7 +1,7 @@
 name: Monitor
 
-# Перевірка каналів приблизно кожні 5 хвилин «естафетою»: кожен запуск наприкінці
-# запускає наступний, а середовище pacer (таймер 4 хв, Settings → Environments)
+# Перевірка каналів приблизно кожні 1,5–2 хвилини «естафетою»: кожен запуск наприкінці
+# запускає наступний, а середовище pacer (таймер 1 хв, Settings → Environments)
 # тримає його в очікуванні, не займаючи сервер. Пости між перевірками не губляться.
 # Якщо естафета колись зупиниться: Actions → Monitor → Run workflow.
 on:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       relay:
-        description: "Запуск естафети (з паузою 4 хв перед перевіркою)"
+        description: "Запуск естафети (з паузою перед перевіркою)"
         type: boolean
         default: false
 
@@ -72,7 +72,7 @@ jobs:
           path: state
           key: state-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Pass the relay (next check in ~5 min)
+      - name: Pass the relay (next check in ~1.5-2 min)
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
