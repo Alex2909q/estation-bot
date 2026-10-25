@@ -193,6 +193,18 @@ class Run:
                         "число" if raw.split(":")[0].isdigit() else "не число")
             self.problems["TG_SESSION"] = "неправильний формат — створіть заново через make_session.command"
 
+    async def call_retry(self, method: str, params: dict | None = None, attempts: int = 4) -> dict:
+        """Виклик Bot API з повторами: короткий збій мережі не має зривати перевірку."""
+        for i in range(attempts):
+            try:
+                return await self.bot.call(method, params)
+            except Exception as e:
+                if i == attempts - 1:
+                    raise
+                log.warning("%s: збій мережі (%s), повтор через %s с", method, e, 5 * (i + 1))
+                await asyncio.sleep(5 * (i + 1))
+        return {}
+
     @property
     def owner(self):
         return env("NOTIFY_CHAT_ID") or self.state["owner_chat_id"]
@@ -202,7 +214,11 @@ class Run:
         params = {"timeout": 0, "allowed_updates": ["message"]}
         if self.state["update_offset"]:
             params["offset"] = self.state["update_offset"]
-        res = await self.bot.call("getUpdates", params)
+        try:
+            res = await self.call_retry("getUpdates", params)
+        except Exception as e:
+            log.warning("getUpdates недоступний (%s) — команди оброблю наступного разу", e)
+            return
         if not res.get("ok"):
             log.warning("getUpdates: %s", res.get("description"))
             return
@@ -377,7 +393,7 @@ class Run:
         if not self.channels:
             log.error("Список каналів порожній (channels.txt).")
             return 1
-        me = await self.bot.call("getMe")
+        me = await self.call_retry("getMe")
         if not me.get("ok"):
             log.error("BOT_TOKEN недійсний: %s", me.get("description"))
             return 1
