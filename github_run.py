@@ -71,7 +71,8 @@ def load_state() -> dict:
         st = json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         st = {}
-    for k, v in {"last_ids": {}, "seen": {}, "pending": [], "titles": {}, "found_total": 0,
+    st.pop("seen", None)                      # старий формат (точний текст за 24 год) — більше не потрібен
+    for k, v in {"last_ids": {}, "recent": {}, "pending": [], "titles": {}, "found_total": 0,
                  "owner_chat_id": None, "update_offset": None, "announced": False,
                  "warned": {}, "keepalive": "", "peers": {}, "web_blocked": []}.items():
         st.setdefault(k, v)
@@ -79,9 +80,8 @@ def load_state() -> dict:
 
 
 def save_state(st: dict, before_hash: str) -> None:
-    dedup_h = int(env("DEDUP_HOURS", "24") or 24)
-    cutoff = time.time() - max(dedup_h, 1) * 3600
-    st["seen"] = {k: v for k, v in st["seen"].items() if v >= cutoff}
+    cutoff = time.time() - max(DEDUP_WINDOW * 4, 3 * 3600)
+    st["recent"] = {k: v for k, v in st["recent"].items() if v >= cutoff}
     st["pending"] = st["pending"][-30:]
     data = json.dumps(st, ensure_ascii=False, indent=1, sort_keys=True)
     STATE_DIR.mkdir(exist_ok=True)
@@ -96,6 +96,17 @@ def save_state(st: dict, before_hash: str) -> None:
 
 def state_hash(st: dict) -> str:
     return hashlib.sha1(json.dumps(st, ensure_ascii=False, indent=1, sort_keys=True).encode()).hexdigest()
+
+
+DEDUP_WINDOW = max(0, int(env("DEDUP_MINUTES", "30") or 30)) * 60
+
+
+def post_time(iso: str | None) -> float:
+    """Час публікації поста (сек). Якщо невідомий — поточний."""
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() if iso else time.time()
+    except ValueError:
+        return time.time()
 
 
 def fmt_time(iso_or_dt) -> str:
@@ -184,6 +195,7 @@ class Run:
         self.photo_bytes: dict[str, bytes] = {}   # фото з каналів без веб-версії (лише в пам'яті)
         self.summary: list[str] = []           # підсумок запуску (видно в анотаціях GitHub)
         self.sent = 0
+        self.duplicates = 0
         self.sent_with_photo = 0
         self.photo_errors: list[str] = []
         self.creds = account_creds()
@@ -332,10 +344,16 @@ class Run:
             matched = core.find_matches(p.text, self.keywords, self.excludes)
             if not matched:
                 continue
-            fp = core.text_fingerprint(p.text)
-            if int(env("DEDUP_HOURS", "24") or 24) and fp in self.state["seen"]:
+            # Те саме оголошення (та сама назва станції й ціна) протягом 30 хв — у будь-якому каналі — не дублюємо.
+            ident = core.announcement_key(p.text)
+            posted = post_time(p.date)
+            prev = self.state["recent"].get(ident)
+            if prev is not None and abs(posted - prev) <= DEDUP_WINDOW:
+                log.info("↺ %s/%s: те саме оголошення вже надсилалось %s хв тому (%s) — пропускаю",
+                         key, p.id, round(abs(posted - prev) / 60), ident)
+                self.duplicates += 1
                 continue
-            self.state["seen"][fp] = time.time()
+            self.state["recent"][ident] = posted
             link = core.message_link(p.id, username, 0, True) if username else None
             pid = f"{key}/{p.id}"
             if reader is not None and getattr(p.raw, "photo", None):
@@ -468,6 +486,8 @@ class Run:
         parts = self.summary + [f"{k}: {v}" for k, v in self.problems.items()]
         parts.append(f"надіслано {self.sent} (з фото {self.sent_with_photo}), у черзі {len(self.state['pending'])}")
         parts += [f"фото — {e}" for e in self.photo_errors[:3]]
+        if self.duplicates:
+            parts.append(f"дублікатів пропущено {self.duplicates}")
         print("::notice title=EStation::" + " | ".join(parts).replace("\n", " "))
         if not self.owner:
             log.warning("Відкрийте @%s у Telegram і натисніть Start — тоді почнуть надходити сповіщення.",

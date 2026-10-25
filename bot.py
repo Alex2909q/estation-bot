@@ -72,7 +72,7 @@ def _load_groups() -> list[str]:
 GROUPS = _load_groups()
 CHECK_INTERVAL = max(15, _env_int("CHECK_INTERVAL", 60))
 INITIAL_LOOKBACK = max(0, _env_int("INITIAL_LOOKBACK", 0))
-DEDUP_HOURS = max(0, _env_int("DEDUP_HOURS", 24))
+DEDUP_MINUTES = max(0, _env_int("DEDUP_MINUTES", 30))
 TZ = _timezone()
 
 STATE_FILE = BASE / "state.json"
@@ -123,13 +123,14 @@ class Monitor:
         except (FileNotFoundError, ValueError):
             data = {}
         data.setdefault("last_ids", {})
-        data.setdefault("seen", {})
+        data.setdefault("recent", {})
+        data.pop("seen", None)
         data.setdefault("found_total", 0)
         return data
 
     def save_state(self) -> None:
-        cutoff = time.time() - max(DEDUP_HOURS, 1) * 3600
-        self.state["seen"] = {k: v for k, v in self.state["seen"].items() if v >= cutoff}
+        cutoff = time.time() - max(DEDUP_MINUTES * 4 * 60, 3 * 3600)
+        self.state["recent"] = {k: v for k, v in self.state["recent"].items() if v >= cutoff}
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(STATE_FILE)
@@ -220,11 +221,14 @@ class Monitor:
             matched = core.find_matches(text, self.keywords, self.excludes)
             if not matched:
                 continue
-            fp = core.text_fingerprint(text)
-            if DEDUP_HOURS and fp in self.state["seen"]:
-                log.info("↺ Повтор того самого оголошення в «%s» — пропускаю", g["title"])
+            # те саме оголошення (назва станції + ціна) протягом DEDUP_MINUTES у будь-якому каналі — пропускаємо
+            ident = core.announcement_key(text)
+            posted = m.date.timestamp()
+            prev = self.state["recent"].get(ident)
+            if DEDUP_MINUTES and prev is not None and abs(posted - prev) <= DEDUP_MINUTES * 60:
+                log.info("↺ Те саме оголошення вже було %s хв тому — пропускаю (%s)", round(abs(posted - prev) / 60), ident)
                 continue
-            self.state["seen"][fp] = time.time()
+            self.state["recent"][ident] = posted
             await self.notify(g, m, text, matched)
         self.state["last_ids"][g["key"]] = newest
 
