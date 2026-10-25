@@ -125,9 +125,9 @@ def shorten(text: str, limit: int = 700) -> str:
 
 def format_notification(*, group_title: str, text: str, link: str | None,
                         matched: list[str], author_html: str | None, when: str,
-                        text_limit: int = 700) -> str:
+                        text_limit: int = 700, header: str | None = None) -> str:
     """HTML-текст сповіщення для Bot API (parse_mode=HTML)."""
-    lines = ["🔋 <b>Нове оголошення: зарядна станція</b>",
+    lines = [header or "🔋 <b>Нове оголошення: зарядна станція</b>",
              f"👥 {html.escape(group_title)}"]
     if author_html:
         lines.append(f"👤 {author_html}")

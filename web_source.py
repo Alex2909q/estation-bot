@@ -23,6 +23,7 @@ class WebPost:
     date: str | None = None          # ISO-8601 з атрибута <time datetime>
     author: str | None = None        # підпис автора поста (якщо є)
     photo: str | None = None         # URL першого фото / обкладинки відео
+    preview: str | None = None       # картинка з прев'ю посилання — запасне фото
     parts: list = field(default_factory=list, repr=False)
     raw: object = field(default=None, repr=False, compare=False)   # повідомлення Telethon (режим акаунта)
 
@@ -75,6 +76,12 @@ class _Parser(HTMLParser):
                 if m:
                     url = m.group(1)
                     self.cur.photo = "https:" + url if url.startswith("//") else url
+            elif (self.cur.preview is None and tag == "i" and a.get("style")
+                  and "link_preview_image" in classes):
+                m = _BG_URL.search(a["style"])
+                if m:
+                    url = m.group(1)
+                    self.cur.preview = "https:" + url if url.startswith("//") else url
 
     def handle_endtag(self, tag):
         if tag == "div":
@@ -103,6 +110,7 @@ def parse_page(html_text: str, channel: str) -> tuple[str | None, list[WebPost]]
     for post in p.posts:
         post.text = re.sub(r"[ \t]+\n", "\n", "".join(post.parts)).strip()
         post.text = re.sub(r"\n{3,}", "\n\n", post.text)
+        post.photo = post.photo or post.preview
         posts[post.id] = post                     # на випадок дублів — беремо останній
     return p.title, sorted(posts.values(), key=lambda x: x.id)
 
@@ -144,3 +152,16 @@ def fetch_new(channel: str, last_id: int, max_pages: int = 5) -> tuple[str | Non
             if p.id > last_id:
                 collected[p.id] = p
     return title, sorted(collected.values(), key=lambda x: x.id)
+
+
+def fetch_bytes(url: str, timeout: float = 20, max_bytes: int = 10_000_000) -> bytes:
+    """Завантажує картинку поста. Telegram сам не вміє брати фото з CDN веб-версії
+    («failed to get HTTP URL content»), тому бот качає його й відправляє файлом."""
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": "https://t.me/"})
+    with urllib.request.urlopen(req, timeout=timeout, context=_CTX) as resp:
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError("картинка завелика")
+    if not data:
+        raise ValueError("порожня відповідь")
+    return data

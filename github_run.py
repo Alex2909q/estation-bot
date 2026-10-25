@@ -18,6 +18,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -183,6 +184,8 @@ class Run:
         self.photo_bytes: dict[str, bytes] = {}   # фото з каналів без веб-версії (лише в пам'яті)
         self.summary: list[str] = []           # підсумок запуску (видно в анотаціях GitHub)
         self.sent = 0
+        self.sent_with_photo = 0
+        self.photo_errors: list[str] = []
         self.creds = account_creds()
         self.account = self.creds is not None
         raw = env("TG_SESSION")
@@ -353,6 +356,33 @@ class Run:
         log.info("%s: нових постів %s, оголошень %s", title, len(posts), found)
         self.summary.append(f"{key}: +{len([p for p in posts if p.id > last])} постів, {found} оголошень")
 
+    async def resend(self, ref: str) -> None:
+        """Повторно надіслати конкретний пост відкритого каналу: RESEND=канал/номер
+        (або посилання t.me/канал/номер). Запускається вручну з Actions → Run workflow."""
+        m = re.match(r"^(?:https?://)?(?:t\.me/)?(?:s/)?@?([A-Za-z0-9_]{4,})/(\d+)", ref.strip())
+        if not m:
+            log.warning("RESEND: не розібрав %r (потрібно канал/номер)", ref)
+            return
+        channel, pid = m.group(1), int(m.group(2))
+        try:
+            title, page = await asyncio.to_thread(web_source.fetch_page, channel, pid + 1)
+        except Exception as e:
+            log.warning("RESEND: не вдалося відкрити @%s (%s)", channel, e)
+            return
+        post = next((p for p in page if p.id == pid), None)
+        if post is None:
+            log.warning("RESEND: пост %s/%s не знайдено", channel, pid)
+            return
+        link = f"https://t.me/{channel}/{pid}"
+        matched = core.find_matches(post.text, self.keywords, self.excludes) or ["повтор"]
+        text = core.format_notification(group_title=title or channel, text=post.text, link=link,
+                                        matched=matched, author_html=None,
+                                        when=fmt_time(post.date) if post.date else "",
+                                        text_limit=550 if post.photo else 700,
+                                        header="🔁 <b>Повторне надсилання оголошення</b>")
+        self.state["pending"].append([text, link, post.photo, f"{channel}/{pid}"])
+        self.summary.append(f"повтор {channel}/{pid}")
+
     async def flush(self) -> None:
         if not self.owner:
             if self.state["pending"]:
@@ -362,7 +392,7 @@ class Run:
             names = "\n".join(f"• {html.escape(self.state['titles'].get(str(core.parse_group_ref(c)), c))}"
                               for c in self.channels)
             ok, _ = await self.bot.send(self.owner, "✅ <b>Моніторинг на GitHub запущено</b>\n"
-                                                    f"Перевіряю приблизно кожні 5 хвилин:\n{names}")
+                                                    f"Перевіряю приблизно кожні 1,5–2 хвилини:\n{names}")
             self.state["announced"] = ok
         for key, problem in self.problems.items():
             today = datetime.now().strftime("%Y-%m-%d")
@@ -373,18 +403,31 @@ class Run:
         for entry in queue:
             text, link, photo_url, pid = (list(entry) + [None, None])[:4]
             photo_bytes = self.photo_bytes.get(pid) if pid else None
-            ok = False
-            if photo_url or photo_bytes:
-                ok, res = await self.bot.send_photo(self.owner, text, photo_url=photo_url,
-                                                    photo_bytes=photo_bytes, button_url=link)
+            if photo_url and not photo_bytes:
+                try:                                   # фото з веб-версії качаємо самі
+                    photo_bytes = await asyncio.to_thread(web_source.fetch_bytes, photo_url)
+                except Exception as e:
+                    self.photo_errors.append(f"завантаження: {e}")
+            ok = with_photo = False
+            res: dict = {}
+            if photo_bytes:
+                ok, res = await self.bot.send_photo(self.owner, text, photo_bytes=photo_bytes, button_url=link)
                 if not ok:
-                    log.info("Фото не пройшло (%s) — надсилаю текстом", res.get("description"))
+                    self.photo_errors.append(f"файл: {res.get('description')}")
+            if not ok and photo_url:
+                ok, res = await self.bot.send_photo(self.owner, text, photo_url=photo_url, button_url=link)
+                if not ok:
+                    self.photo_errors.append(f"посилання: {res.get('description')}")
+            with_photo = ok
             if not ok:
                 ok, res = await self.bot.send(self.owner, text, link)
             self.sent += 1 if ok else 0
+            self.sent_with_photo += 1 if with_photo else 0
             if not ok:
                 log.warning("Не вдалося надіслати: %s", res.get("description"))
                 self.state["pending"].append([text, link, photo_url, pid])
+        for err in self.photo_errors:
+            log.info("Фото: %s", err)
 
     def keepalive(self) -> None:
         """GitHub вимикає розклад у публічних репозиторіях після 60 днів без активності.
@@ -416,12 +459,15 @@ class Run:
             return 1
         before = state_hash(self.state)
         await self.process_updates()
+        if env("RESEND"):
+            await self.resend(env("RESEND"))
         await self.check_all()
         await self.flush()
         self.keepalive()
         save_state(self.state, before)
         parts = self.summary + [f"{k}: {v}" for k, v in self.problems.items()]
-        parts.append(f"надіслано {self.sent}, у черзі {len(self.state['pending'])}")
+        parts.append(f"надіслано {self.sent} (з фото {self.sent_with_photo}), у черзі {len(self.state['pending'])}")
+        parts += [f"фото — {e}" for e in self.photo_errors[:3]]
         print("::notice title=EStation::" + " | ".join(parts).replace("\n", " "))
         if not self.owner:
             log.warning("Відкрийте @%s у Telegram і натисніть Start — тоді почнуть надходити сповіщення.",

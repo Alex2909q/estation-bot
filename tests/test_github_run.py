@@ -49,7 +49,7 @@ class FakeBot:
         return True, {"ok": True}
 
     async def send_photo(self, chat_id, caption, photo_url=None, photo_bytes=None, button_url=None):
-        photos.append((photo_url, len(caption)))
+        photos.append((photo_bytes.decode() if photo_bytes else photo_url, len(caption)))
         if photo_url and "fail" in photo_url:
             return False, {"ok": False, "description": "bad photo"}
         sent.append((chat_id, caption, button_url))
@@ -68,6 +68,7 @@ github_run.STATE_DIR = tmp / "state"
 github_run.STATE_FILE = github_run.STATE_DIR / "state.json"
 github_run.BotAPI = FakeBot
 web_source.fetch_page = fake_fetch_page
+web_source.fetch_bytes = lambda url, **kw: f"bytes:{url}".encode()   # без мережі
 
 # Запуск 1: нікого немає, канал має 1 пост → лише запам'ятовуємо позиції
 run_once()
@@ -90,7 +91,7 @@ assert any("dealradarua" in t and "TG_SESSION" in t for t in texts)
 assert any("Підключено" in t for t in texts)
 assert all(s[0] == 777 for s in sent)
 print("run2 OK:", len(sent), "messages ->", links)
-assert photos and photos[0][0] == "https://cdn4.telesco.pe/file/test2439.jpg", photos
+assert photos and photos[0][0] == "bytes:https://cdn4.telesco.pe/file/test2439.jpg", photos   # фото йде файлом
 assert all(n <= 1024 for _, n in photos), photos          # підпис до фото в межах ліміту Telegram
 print("photo OK:", photos)
 

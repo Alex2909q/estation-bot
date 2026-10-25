@@ -13,6 +13,10 @@ on:
         description: "Запуск естафети (з паузою перед перевіркою)"
         type: boolean
         default: false
+      resend:
+        description: "Повторно надіслати пост відкритого каналу (канал/номер), напр. egogorushka88/65848"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -43,6 +47,7 @@ jobs:
       API_ID: ${{ secrets.API_ID }}
       API_HASH: ${{ secrets.API_HASH }}
       GITHUB_TOKEN: ${{ github.token }}
+      RESEND: ${{ inputs.resend }}
       TIMEZONE: Europe/Kyiv
     steps:
       - uses: actions/checkout@v4
