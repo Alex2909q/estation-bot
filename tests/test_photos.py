@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+os.environ.setdefault("HOT_MODE", "off")
 os.environ.update(BOT_TOKEN="1:test", GROUPS="@egogorushka88", TG_SESSION="", NOTIFY_CHAT_ID="777")
 
 import github_run  # noqa: E402

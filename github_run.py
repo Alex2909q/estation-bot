@@ -74,7 +74,8 @@ def load_state() -> dict:
     st.pop("seen", None)                      # старий формат (точний текст за 24 год) — більше не потрібен
     for k, v in {"last_ids": {}, "recent": {}, "pending": [], "titles": {}, "found_total": 0,
                  "owner_chat_id": None, "update_offset": None, "announced": False,
-                 "warned": {}, "keepalive": "", "peers": {}, "web_blocked": []}.items():
+                 "warned": {}, "keepalive": "", "peers": {}, "web_blocked": [],
+                 "hot_sent": {}, "hot_scan_at": 0, "hot_init": False, "hot_total": 0}.items():
         st.setdefault(k, v)
     return st
 
@@ -83,6 +84,8 @@ def save_state(st: dict, before_hash: str) -> None:
     cutoff = time.time() - max(DEDUP_WINDOW * 4, 3 * 3600)
     st["recent"] = {k: v for k, v in st["recent"].items() if v >= cutoff}
     st["pending"] = st["pending"][-30:]
+    hot_cutoff = time.time() - (HOT_WINDOW + 24 * 3600)
+    st["hot_sent"] = {k: v for k, v in st["hot_sent"].items() if v >= hot_cutoff}
     data = json.dumps(st, ensure_ascii=False, indent=1, sort_keys=True)
     STATE_DIR.mkdir(exist_ok=True)
     STATE_FILE.write_text(data, encoding="utf-8")
@@ -99,6 +102,13 @@ def state_hash(st: dict) -> str:
 
 
 DEDUP_WINDOW = max(0, int(env("DEDUP_MINUTES", "30") or 30)) * 60
+
+# «Жваве обговорення»: будь-який пост (не станція), під яким коментарів БІЛЬШЕ за HOT_MIN_COMMENTS.
+HOT_MODE = (env("HOT_MODE", "on") or "on").lower()            # on | off | diag (лише звіт, без надсилання)
+HOT_MIN = int(env("HOT_MIN_COMMENTS", "4") or 4)              # більше 4 → від 5 коментарів
+HOT_SCAN_EVERY = max(1, int(env("HOT_SCAN_MINUTES", "3") or 3)) * 60
+HOT_WINDOW = max(1, int(env("HOT_WINDOW_HOURS", "24") or 24)) * 3600   # скільки годин стежити за постом
+HOT_BACKLOG = max(0, int(env("HOT_BACKLOG_HOURS", "3") or 3)) * 3600   # при першому запуску — лише свіжі
 
 
 def post_time(iso: str | None) -> float:
@@ -181,6 +191,27 @@ class AccountReader:
             posts = [web_source.WebPost(m.id, m.message or "", m.date.isoformat()) for m in latest]
         return title, username, entity, posts
 
+    async def recent_posts(self, ref: str, since: float, limit: int = 300):
+        """Пости за останній час з кількістю коментарів. Альбом (кілька фото) — один пост."""
+        entity, username = await self._entity(ref)
+        groups: dict = {}
+        async for m in self.client.iter_messages(entity, limit=limit):
+            if m.date.timestamp() < since:
+                break
+            if m.action:
+                continue
+            g = groups.setdefault(m.grouped_id or ("m", m.id),
+                                  {"id": m.id, "text": "", "date": m.date.isoformat(), "comments": None, "media": None})
+            g["id"] = min(g["id"], m.id)
+            if m.message and not g["text"]:
+                g["text"] = m.message
+            if getattr(m, "photo", None) and (g["media"] is None or m.message):
+                g["media"] = m
+            r = getattr(m, "replies", None)
+            if r is not None and getattr(r, "comments", False):
+                g["comments"] = max(g["comments"] or 0, r.replies or 0)
+        return username, sorted(groups.values(), key=lambda x: x["id"])
+
 
 # ------------------------------------------------------------ основне ---
 
@@ -197,6 +228,7 @@ class Run:
         self.sent = 0
         self.duplicates = 0
         self.sent_heads: list[str] = []
+        self.hot_found = 0
         self.sent_with_photo = 0
         self.photo_errors: list[str] = []
         self.creds = account_creds()
@@ -253,8 +285,9 @@ class Run:
                 await self.bot.send(chat_id, "Це приватний бот.")
                 continue
             if cmd in ("/start", "/help"):
-                await self.bot.send(chat_id, "✅ Підключено. Нові оголошення про зарядні станції "
-                                             "надходитимуть сюди.\n/status — стан моніторингу")
+                await self.bot.send(chat_id, "✅ Підключено. Сюди надходитимуть нові оголошення про зарядні "
+                                             f"станції (🔋) і пости з жвавим обговоренням — понад {HOT_MIN} "
+                                             "коментарі (💬).\n/status — стан моніторингу")
             elif cmd == "/status":
                 await self.bot.send(chat_id, self.status_text())
 
@@ -267,8 +300,10 @@ class Run:
             lines.append(f"• {html.escape(title)} — {html.escape(mark)}")
         mode = "через ваш акаунт" if self.account else "через веб-версію каналів"
         return (f"▶️ <b>Працює на GitHub</b> ({mode})\n"
-                f"Перевірка ~кожні 5 хв · остання: {fmt_time(datetime.now().astimezone())}\n"
-                f"Знайдено всього: {self.state['found_total']}\n\n" + "\n".join(lines))
+                f"Перевірка ~кожні 1,5–2 хв · остання: {fmt_time(datetime.now().astimezone())}\n"
+                f"🔋 Станцій знайдено: {self.state['found_total']}\n"
+                f"💬 Жвавих обговорень (понад {HOT_MIN} коментарі): {self.state['hot_total']}\n\n"
+                + "\n".join(lines))
 
     # ----- перевірка каналів -----
     def _web_readable(self, ref: str) -> bool:
@@ -286,22 +321,87 @@ class Run:
             elif await self.check_one(ref, None) == "noweb":
                 self.state["web_blocked"].append(str(core.parse_group_ref(ref)))
                 need_account.append(ref)
-        if not need_account:
+        scan_due = (HOT_MODE in ("on", "diag")
+                    and time.time() - float(self.state["hot_scan_at"] or 0) >= HOT_SCAN_EVERY - 20)
+        if not need_account and not scan_due:
             return
-        # 2) Закриті канали — через акаунт (один вхід на всю перевірку).
+        # 2) Через акаунт (один вхід на всю перевірку): закриті канали + коментарі під постами.
         if not self.account:
             for ref in need_account:
                 key = str(core.parse_group_ref(ref))
                 self.problems[key] = "немає веб-версії, потрібен TG_SESSION"
                 log.warning("@%s: у каналу вимкнена веб-версія — його можна читати лише з TG_SESSION.", key)
+            if scan_due:
+                self.problems["коментарі"] = "рахуються лише через акаунт — потрібен TG_SESSION"
             return
         try:
             async with AccountReader(self.creds, self.state["peers"]) as reader:
                 for ref in need_account:
                     await self.check_one(ref, reader)
+                if scan_due:
+                    await self.scan_comments(reader)
         except Exception as e:
             log.warning("Акаунт недоступний (%s)", e)
             self.problems["TG_SESSION"] = f"не працює: {e}"
+
+    async def scan_comments(self, reader) -> None:
+        """Пости (не станції), під якими коментарів більше за HOT_MIN, — надсилаємо один раз."""
+        now = time.time()
+        self.state["hot_scan_at"] = now
+        first = not self.state["hot_init"] and HOT_MODE == "on"
+        diag = HOT_MODE == "diag"
+        remembered = 0
+        for ref in self.channels:
+            key = str(core.parse_group_ref(ref))
+            try:
+                username, posts = await reader.recent_posts(ref, now - HOT_WINDOW)
+            except Exception as e:
+                log.warning("%s: коментарі не прочитано (%s)", key, e)
+                continue
+            title = self.state["titles"].get(key) or key
+            with_comments = [p for p in posts if p["comments"] is not None]
+            hot = [p for p in with_comments if p["comments"] > HOT_MIN]
+            if diag:
+                top = sorted(with_comments, key=lambda p: -p["comments"])[:8]
+                log.info("DIAG %s: постів за %s год — %s, з коментарями — %s, понад %s — %s; топ: %s",
+                         key, HOT_WINDOW // 3600, len(posts), len(with_comments), HOT_MIN, len(hot),
+                         "; ".join(f"{p['id']}:{p['comments']}"
+                                   f"{'(станція)' if core.find_matches(p['text'], self.keywords) else ''}"
+                                   f" {core.product_summary(p['text'], 'без тексту')[0][:40]}" for p in top))
+                self.summary.append(f"DIAG {key}: {len(posts)} постів, понад {HOT_MIN} коментарів — {len(hot)}")
+                continue
+            for p in hot:
+                pid = f"{key}/{p['id']}"
+                if pid in self.state["hot_sent"]:
+                    continue
+                if core.find_matches(p["text"], self.keywords):
+                    continue                          # станції — як і раніше, окремим правилом
+                self.state["hot_sent"][pid] = now
+                if first and post_time(p["date"]) < now - HOT_BACKLOG:
+                    remembered += 1                   # старі обговорення при першому запуску не шлемо
+                    continue
+                link = core.message_link(p["id"], username, 0, True) if username else None
+                if p["media"] is not None:
+                    try:
+                        self.photo_bytes[pid] = await reader.client.download_media(p["media"], file=bytes)
+                    except Exception as e:
+                        log.info("%s: фото не завантажено (%s)", pid, e)
+                n = p["comments"]
+                text = core.format_notification(
+                    group_title=title, text=p["text"], link=link,
+                    when=fmt_time(p["date"]), text_limit=500 if pid in self.photo_bytes else 700,
+                    icon="💬", default_title="Пост без тексту",
+                    extra=f"🗨 <b>{n} {core.plural_uk(n, 'коментар', 'коментарі', 'коментарів')}</b> — жваве обговорення")
+                self.state["pending"].append([text, link, None, pid])
+                self.state["hot_total"] += 1
+                self.hot_found += 1
+                log.info("💬 %s: %s коментарів — %s", title, n, link or pid)
+        if first:
+            self.state["hot_init"] = True
+            log.info("Жваві обговорення: перший запуск, старші за %s год лише запам'ятав (%s)",
+                     HOT_BACKLOG // 3600, remembered)
+        if self.hot_found:
+            self.summary.append(f"жвавих обговорень {self.hot_found}")
 
     async def check_one(self, ref: str, reader) -> str | None:
         target = core.parse_group_ref(ref)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+os.environ.setdefault("HOT_MODE", "off")
 os.environ.update(BOT_TOKEN="1:test", GROUPS="@ZBSkitai,@dealradarua,@technorika",
                   TG_SESSION="1:hash:session", NOTIFY_CHAT_ID="777")
 

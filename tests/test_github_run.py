@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+os.environ.setdefault("HOT_MODE", "off")
 os.environ.update(BOT_TOKEN="123:test", GROUPS="", NOTIFY_CHAT_ID="", TG_SESSION="")
 
 import web_source  # noqa: E402

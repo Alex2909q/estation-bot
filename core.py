@@ -125,12 +125,17 @@ def shorten(text: str, limit: int = 700) -> str:
 
 def format_notification(*, group_title: str, text: str, link: str | None,
                         matched: list[str] | None = None, author_html: str | None = None, when: str = "",
-                        text_limit: int = 700, header: str | None = None) -> str:
+                        text_limit: int = 700, header: str | None = None,
+                        icon: str = "🔋", extra: str | None = None,
+                        default_title: str = "Зарядна станція") -> str:
     """HTML-текст сповіщення (parse_mode=HTML). Перший рядок — назва станції, другий — ціна:
-    саме їх видно у спливаючому сповіщенні, ще до відкриття Telegram."""
-    title, price = product_summary(text)
-    lines = [f"🔋 <b>{html.escape(title)}</b>",
+    саме їх видно у спливаючому сповіщенні, ще до відкриття Telegram.
+    icon/extra — для «жвавих обговорень»: 💬 замість 🔋 і рядок з кількістю коментарів."""
+    title, price = product_summary(text, default_title)
+    lines = [f"{icon} <b>{html.escape(title)}</b>",
              f"💶 <b>{html.escape(price)}</b>" if price else "💶 ціну не вказано"]
+    if extra:
+        lines.append(extra)
     meta = f"👥 {html.escape(group_title)}"
     if when:
         meta += f" · 🕒 {html.escape(when)}"
@@ -279,7 +284,7 @@ def first_price(text: str) -> tuple[str, int] | None:
     return (pm[0], pm[1]) if pm else None
 
 
-def product_summary(text: str) -> tuple[str, str | None]:
+def product_summary(text: str, default_title: str = "Зарядна станція") -> tuple[str, str | None]:
     """(назва станції, ціна як у пості) — для першого й другого рядка сповіщення."""
     found = _scan_products(text)
     names = list(dict.fromkeys(d for _, d, has in found if has)) or list(dict.fromkeys(d for _, d, _ in found))
@@ -298,7 +303,7 @@ def product_summary(text: str) -> tuple[str, str | None]:
             if sum(ch.isalpha() for ch in clean) >= 3:
                 title = clean
                 break
-        title = title or "Зарядна станція"
+        title = title or default_title
     if len(title) > 70:
         title = title[:69].rstrip() + "…"
     return title, price
@@ -317,3 +322,12 @@ def announcement_key(text: str) -> str:
     if lines:
         return "l:" + " / ".join(lines)[:120] + "|" + price_part
     return "t:" + text_fingerprint(text)
+
+
+def plural_uk(n: int, one: str, few: str, many: str) -> str:
+    """1 коментар, 2 коментарі, 5 коментарів, 21 коментар, 112 коментарів."""
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many

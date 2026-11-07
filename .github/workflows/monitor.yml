@@ -13,6 +13,10 @@ on:
         description: "Запуск естафети (з паузою перед перевіркою)"
         type: boolean
         default: false
+      hot_mode:
+        description: "Жваві обговорення (понад 4 коментарі): on / off / diag (лише звіт у журналі)"
+        type: string
+        default: ""
       resend:
         description: "Повторно надіслати пост відкритого каналу (канал/номер), напр. egogorushka88/65848"
         type: string
@@ -48,6 +52,8 @@ jobs:
       API_HASH: ${{ secrets.API_HASH }}
       GITHUB_TOKEN: ${{ github.token }}
       RESEND: ${{ inputs.resend }}
+      HOT_MODE: ${{ inputs.hot_mode || 'off' }}
+      HOT_MIN_COMMENTS: "4"          # надсилати пост, якщо коментарів БІЛЬШЕ ніж 4
       TIMEZONE: Europe/Kyiv
     steps:
       - uses: actions/checkout@v4
