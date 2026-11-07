@@ -162,3 +162,10 @@ feed["ZBSkitai"].append(post(3, "Кавоварка — 120€", 8, 1))
 r = run(force_scan=False)
 assert sent == [], sent
 print("pace OK: коментарі перевіряються не частіше ніж раз на 3 хв")
+
+# Дублікати: той самий пост двічі поспіль (як «Знижка від larik2133» у Знижках Мао) — надсилаємо один раз
+sent.clear()
+feed["ZBSkitai"] += [post(4, "Знижка від larik2133", 13, 2), post(5, "Знижка від larik2133", 13, 1)]
+r = run()
+assert [l for _, l in sent] == ["https://t.me/ZBSkitai/3", "https://t.me/ZBSkitai/4"], [l for _, l in sent]
+print("dedup OK: однакове обговорення двічі поспіль — надіслано один раз")

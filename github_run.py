@@ -380,6 +380,15 @@ class Run:
                 if first and post_time(p["date"]) < now - HOT_BACKLOG:
                     remembered += 1                   # старі обговорення при першому запуску не шлемо
                     continue
+                # те саме правило дублів, що й для станцій: та сама назва й ціна протягом 30 хв — один раз
+                ident = "hot:" + core.announcement_key(p["text"] or pid)
+                posted = post_time(p["date"])
+                prev = self.state["recent"].get(ident)
+                if prev is not None and abs(posted - prev) <= DEDUP_WINDOW:
+                    log.info("↺ %s: таке саме обговорення вже надсилалось — пропускаю", pid)
+                    self.duplicates += 1
+                    continue
+                self.state["recent"][ident] = posted
                 link = core.message_link(p["id"], username, 0, True) if username else None
                 if p["media"] is not None:
                     try:
