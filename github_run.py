@@ -336,6 +336,16 @@ class Run:
             return
         try:
             async with AccountReader(self.creds, self.state["peers"]) as reader:
+                if not self.owner:
+                    # Стан загубився (кеш GitHub не відновився) — чат власника беремо з його ж акаунта:
+                    # приватний чат з ботом має той самий id, що й користувач.
+                    try:
+                        me = await reader.client.get_me()
+                        self.state["owner_chat_id"] = me.id
+                        log.info("Чат власника відновлено з акаунта (TG_SESSION).")
+                        self.summary.append("чат власника відновлено з акаунта")
+                    except Exception as e:
+                        log.warning("Не вдалося відновити чат власника з акаунта: %s", e)
                 for ref in need_account:
                     await self.check_one(ref, reader)
                 if scan_due:
