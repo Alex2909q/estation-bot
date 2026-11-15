@@ -55,9 +55,7 @@ class FakeBot:
 
 
 def fetch_new(channel, last_id, max_pages=5):
-    if channel == "dealradarua":
-        raise web_source.NoWebPreview(channel)
-    return channel, []
+    return channel, []          # усі канали відкриті: акаунт потрібен лише для відновлення чату
 
 
 web_source.fetch_new = fetch_new

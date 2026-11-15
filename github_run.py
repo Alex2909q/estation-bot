@@ -323,7 +323,8 @@ class Run:
                 need_account.append(ref)
         scan_due = (HOT_MODE in ("on", "diag")
                     and time.time() - float(self.state["hot_scan_at"] or 0) >= HOT_SCAN_EVERY - 20)
-        if not need_account and not scan_due:
+        need_owner = self.account and not self.owner     # чат власника загубився — відновимо з акаунта
+        if not need_account and not scan_due and not need_owner:
             return
         # 2) Через акаунт (один вхід на всю перевірку): закриті канали + коментарі під постами.
         if not self.account:
