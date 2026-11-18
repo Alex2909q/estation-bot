@@ -321,8 +321,8 @@ class Run:
             elif await self.check_one(ref, None) == "noweb":
                 self.state["web_blocked"].append(str(core.parse_group_ref(ref)))
                 need_account.append(ref)
-        scan_due = (HOT_MODE in ("on", "diag")
-                    and time.time() - float(self.state["hot_scan_at"] or 0) >= HOT_SCAN_EVERY - 20)
+        scan_due = HOT_MODE == "diag" or (
+            HOT_MODE == "on" and time.time() - float(self.state["hot_scan_at"] or 0) >= HOT_SCAN_EVERY - 20)
         need_owner = self.account and not self.owner     # чат власника загубився — відновимо з акаунта
         if not need_account and not scan_due and not need_owner:
             return
@@ -379,7 +379,11 @@ class Run:
                          "; ".join(f"{p['id']}:{p['comments']}"
                                    f"{'(станція)' if core.find_matches(p['text'], self.keywords) else ''}"
                                    f" {core.product_summary(p['text'], 'без тексту')[0][:40]}" for p in top))
-                self.summary.append(f"DIAG {key}: {len(posts)} постів, понад {HOT_MIN} коментарів — {len(hot)}")
+                newest = max(posts, key=lambda p: p["id"]) if posts else None
+                self.summary.append(
+                    f"DIAG {key}: {len(posts)} постів за добу, понад {HOT_MIN} коментарів — {len(hot)}; "
+                    f"найновіший {newest['id'] if newest else '-'} ({fmt_time(newest['date']) if newest else '-'}), "
+                    f"бот дочитав до {self.state['last_ids'].get(key, '-')}")
                 continue
             for p in hot:
                 pid = f"{key}/{p['id']}"
