@@ -1,0 +1,63 @@
+name: Svitlo 2.2
+
+# Бот «Світло 2.2» працює безперервно: кожен запуск живе ~5 год 45 хв, а через 2 хв після старту
+# ставить наступний запуск у чергу. Наступний стартує одразу, щойно попередній завершився або впав.
+# Якщо колись зупиниться: Actions → Svitlo 2.2 → Run workflow.
+on:
+  push:
+    branches: [main]
+    paths: ["svitlo/**", ".github/workflows/svitlo.yml"]
+  workflow_dispatch:
+  schedule:
+    - cron: "7,37 * * * *"     # запасний запуск, якщо черга колись обірветься
+
+permissions:
+  contents: write     # зашифрований стан у гілці svitlo-state
+  actions: write      # постановка наступного запуску в чергу
+
+concurrency:
+  group: svitlo
+  cancel-in-progress: ${{ github.event_name == 'push' }}   # нова версія коду одразу замінює стару
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      SVITLO_BOT_TOKEN: ${{ secrets.SVITLO_BOT_TOKEN }}
+      SVITLO_SESSION: ${{ secrets.SVITLO_SESSION }}
+      SVITLO_CHAT_ID: ${{ secrets.SVITLO_CHAT_ID }}
+      SVITLO_QUEUE: "2.2"
+      TIMEZONE: Europe/Kyiv
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: svitlo/requirements.txt
+
+      - run: pip install -q -r svitlo/requirements.txt
+
+      - name: Run bot
+        run: python svitlo/run.py
+
+      - name: Queue the next run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ ! -f /tmp/svitlo_healthy ]; then
+            echo "::warning title=Svitlo::Бот не запустився (перевірте секрети SVITLO_BOT_TOKEN / SVITLO_SESSION). Наступний запуск не ставлю."
+            exit 0
+          fi
+          waiting=$(gh api "repos/$REPO/actions/workflows/svitlo.yml/runs?per_page=10" \
+            --jq '[.workflow_runs[] | select(.status=="queued" or .status=="waiting" or .status=="pending" or .status=="requested")] | length')
+          if [ "$waiting" = "0" ]; then
+            gh api -X POST "repos/$REPO/actions/workflows/svitlo.yml/dispatches" -f ref=main && echo "Наступний запуск поставлено"
+          else
+            echo "Наступний запуск уже в черзі"
+          fi

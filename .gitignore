@@ -9,3 +9,4 @@ __pycache__/
 background.log
 state/
 .venv-session/
+svitlo/state.json

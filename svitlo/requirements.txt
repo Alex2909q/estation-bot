@@ -1,0 +1,4 @@
+telethon>=1.36
+tuya-device-sharing-sdk>=0.2.1
+segno>=1.6
+cryptography>=42
