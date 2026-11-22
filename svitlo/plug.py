@@ -71,11 +71,16 @@ class Plug:
         return out
 
     def online(self, device_id: str) -> bool | None:
-        res = self.api.get("/v1.0/m/life/ha/devices/detail", {"devIds": device_id})
-        items = (res or {}).get("result") or []
-        if not items:
-            return None
-        return bool(items[0].get("online"))
+        """Список пристроїв дому показує актуальний online (поле в /devices/detail запізнюється)."""
+        if not getattr(self, "_homes", None):
+            homes = self.api.get("/v1.0/m/life/users/homes") or {}
+            self._homes = [str(h["ownerId"]) for h in homes.get("result") or []]
+        for home in self._homes:
+            res = self.api.get("/v1.0/m/life/ha/home/devices", {"homeId": home}) or {}
+            for d in res.get("result") or []:
+                if d.get("id") == device_id:
+                    return bool(d.get("online"))
+        return None
 
 
 class PlugEvents:

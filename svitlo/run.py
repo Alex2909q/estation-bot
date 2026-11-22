@@ -585,8 +585,7 @@ class App:
             self.st["tuya"]["token"] = token_info
 
     async def plug_loop(self):
-        """Стан розетки — за подіями хмари Tuya (online/offline), як у застосунку Smart Life.
-        Запит стану через API лише перевіряє, що доступ до хмари працює: його поле online запізнюється."""
+        """Стан розетки: миттєві події хмари Tuya (online/offline) + щохвилинна перевірка списку пристроїв."""
         loop = asyncio.get_running_loop()
 
         def cb(online: bool, why: str):
@@ -603,11 +602,13 @@ class App:
                         await asyncio.to_thread(ev.start)
                         self.plug_ev = ev
                         self.diag("plug", f"події підключено, стан при старті online={ev.initial}")
-                        if self.st["plug"]["online"] is None and ev.initial is not None:
-                            await self.plug_state(ev.initial)
                     if self.plug is None:
                         self.plug = plugmod.Plug(t, self._save_token)
-                    await asyncio.to_thread(self.plug.online, t["device_id"])     # перевірка доступу
+                    online = await asyncio.to_thread(self.plug.online, t["device_id"])
+                    if online is None:
+                        raise RuntimeError("розетку не знайдено в акаунті Smart Life")
+                    self.diag("plug_poll", f"online={online}")
+                    await self.plug_state(online)
                     self.plug_errors = 0
                     if self.plug_err_notified:
                         self.plug_err_notified = False
