@@ -250,6 +250,11 @@ class App:
             else:
                 out.append("Графіка ще немає")
             out.append("")
+        if self.st.get("emergency"):
+            out.append("🚨 <b>ДТЕК: діють екстрені відключення, графіки не діють</b>")
+        addr = self.st.get("addr_outage")
+        if addr:
+            out.append(f"⚠️ {esc(addr)}")
         out.append(self.now_line())
         pl = self.plug_line()
         if pl:
@@ -327,8 +332,21 @@ class App:
         if h == self.st.get("attention", ""):
             return
         self.st["attention"] = h
-        if text:
-            await self.bot.send(self.owner, f"📢 <b>Повідомлення на сайті ДТЕК (Київщина)</b>\n\n{esc(text[:3500])}")
+        cls = parse.classify_notice(text)
+        was = bool(self.st.get("emergency"))
+        self.st["emergency"] = cls["emergency"]
+        new_local = [x for x in cls["local"] if x not in self.st.get("notice_local", [])]
+        self.st["notice_local"] = cls["local"]
+        if cls["emergency"] and not was:
+            await self.bot.send(self.owner, "🚨 <b>ДТЕК: екстрені відключення — графіки зараз не діють</b>\n\n"
+                                            f"{esc(text[:3000])}")
+            await self.refresh_pin()
+        elif was and not cls["emergency"]:
+            await self.bot.send(self.owner, "✅ <b>ДТЕК: екстрені відключення скасовано</b>, знову діють графіки.\n"
+                                            "Актуальний графік — у закріпленому повідомленні.")
+            await self.refresh_pin()
+        if new_local:
+            await self.bot.send(self.owner, "⚠️ <b>ДТЕК: аварія поруч</b>\n\n" + esc("\n".join(new_local)[:3000]))
 
     # ---------- Telegram-акаунт: чати й канали ----------
 
@@ -368,11 +386,33 @@ class App:
     async def on_event(self, event):
         try:
             if event.is_private:
+                await self.dtek_bot_message(event)
                 return
             chat = await event.get_chat()
             await self.handle_message(chat, event.message)
         except Exception as e:
             log.warning("Обробка повідомлення: %s", e)
+
+    async def dtek_bot_message(self, event):
+        """Сповіщення офіційного бота ДТЕК про відключення за вашою адресою — пересилаємо сюди."""
+        if event.out:
+            return
+        sender = await event.get_sender()
+        uname = (getattr(sender, "username", "") or "").lower()
+        if not (getattr(sender, "bot", False) and "dtek" in uname):
+            return
+        text = (event.message.message or "").strip()
+        if not text or not re.search(r"відключ|авар|знеструм|ремонт|відновлен|електропостачан|світл", text, re.I):
+            return
+        n = now()
+        if re.search(r"відновлен|увімкнен|з'явил|відновили", text, re.I):
+            self.st["addr_outage"] = None
+        else:
+            first = text.split("\n", 1)[0][:150]
+            self.st["addr_outage"] = f"ДТЕК за вашою адресою ({n:%H:%M}): {first}"
+        if self.owner:
+            await self.bot.send(self.owner, f"🏠 <b>ДТЕК за вашою адресою</b>\n\n{esc(text[:3500])}")
+            await self.refresh_pin()
 
     def link_for(self, chat, msg_id: int) -> str | None:
         uname = getattr(chat, "username", None)

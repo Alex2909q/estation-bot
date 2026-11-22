@@ -255,3 +255,25 @@ def total_off(iv: list[list[int]]) -> str:
     m = sum(b - a for a, b in iv)
     h, mm = divmod(m, 60)
     return f"{h} год" + (f" {mm} хв" if mm else "")
+
+
+# ---------- повідомлення ДТЕК («Шановні клієнти!») ----------
+
+EMERGENCY = re.compile(
+    r"(?:застосован\w*|застосовуют\w*|запроваджен\w*|введен\w*|оголошен\w*|діють|діятимуть)\s+"
+    r"(?:\S+\s+){0,2}(?:екстрен|аварійн)\w*\s+відключ"
+    r"|(?:екстрен|аварійн)\w*\s+відключ\w*\s+(?:\S+\s+){0,3}(?:застосован|запроваджен|введен|оголошен|діють)"
+    r"|графік\w*\s+(?:\S+\s+){0,3}(?:не\s+діють|не\s+застосов|скасован|не\s+діятим)"
+    r"|\bГАВ\b|графік\w*\s+аварійних",
+    re.I)
+LOCAL_PLACE = re.compile(r"фастів|чабан|новосілк", re.I)
+LOCAL_EVENT = re.compile(r"авар|зникло\s+світло|знеструм|відключ|без\s+світла|пошкодж", re.I)
+
+
+def classify_notice(text: str) -> dict:
+    """Чи важливе повідомлення ДТЕК: екстрені відключення (графіки не діють) або аварія поруч."""
+    text = _norm(text or "")
+    emergency = bool(EMERGENCY.search(text))
+    local = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n", text)
+             if LOCAL_PLACE.search(s) and LOCAL_EVENT.search(s)]
+    return {"emergency": emergency, "local": local}
