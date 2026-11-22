@@ -141,7 +141,8 @@ class App:
         st = self.store.load()
         for k, v in {"owner": None, "offset": None, "pin_id": None, "pin_text": "", "best": {},
                      "announced": {}, "chats": {}, "pending": {}, "official": {}, "tuya": None,
-                     "plug": {"online": None, "since": None}, "welcomed": False}.items():
+                     "plug": {"online": None, "since": None}, "welcomed": False, "diag": {},
+                     "test_done": ""}.items():
             st.setdefault(k, v)
         self.st = st
         self.started = time.time()
@@ -154,6 +155,9 @@ class App:
         self.plug_err_notified = False
         self.login_busy = False
         self.lock = asyncio.Lock()
+
+    def diag(self, key: str, value):
+        self.st["diag"][key] = f"{now():%d.%m %H:%M} {value}"[:300]
 
     @property
     def owner(self):
@@ -293,6 +297,7 @@ class App:
     async def official_loop(self):
         while True:
             data = await asyncio.to_thread(self._fetch_official)
+            self.diag("official", "ok" if data else "помилка завантаження")
             if data:
                 dates, updated = parse.parse_official(data, TZ, QUEUE)
                 changed = set()
@@ -331,6 +336,7 @@ class App:
         raw = env("SVITLO_SESSION")
         if not raw:
             log.warning("SVITLO_SESSION не задано — читаю лише офіційні дані.")
+            self.diag("account", "SVITLO_SESSION не задано")
             return
         try:
             api_id, api_hash, sess = raw.split(":", 2)
@@ -349,8 +355,10 @@ class App:
             self.client.add_event_handler(self.on_event, events.NewMessage())
             self.client.add_event_handler(self.on_event, events.MessageEdited())
             log.info("Акаунт Telegram підключено, читаю чати й канали.")
+            self.diag("account", f"ok, акаунт {me.id}")
         except Exception as e:
             log.error("Telegram-акаунт: %s", e)
+            self.diag("account", f"помилка: {e}")
             self.client = None
             if self.owner:
                 await self.bot.send(self.owner, f"⚠️ Не вдалося підключити ваш Telegram-акаунт ({esc(e)}). "
@@ -501,6 +509,7 @@ class App:
                     if online is None:
                         raise RuntimeError("немає даних про пристрій")
                     self.plug_errors = 0
+                    self.diag("plug", f"ok, online={online}")
                     if self.plug_err_notified:
                         self.plug_err_notified = False
                         await self.bot.send(self.owner, "🔌 Зв'язок із хмарою Smart Life відновлено.", silent=True)
@@ -509,6 +518,7 @@ class App:
                     self.plug_errors += 1
                     self.plug = None
                     log.warning("Розетка: %s", e)
+                    self.diag("plug", f"помилка: {e}")
                     if self.plug_errors == 10 and not self.plug_err_notified:
                         self.plug_err_notified = True
                         await self.bot.send(self.owner, "⚠️ 10 хвилин не можу отримати стан розетки з хмари Smart Life. "
@@ -549,6 +559,7 @@ class App:
         self.login_busy = True
         try:
             qr, err = await asyncio.to_thread(plugmod.start_login, code)
+            self.diag("tuya_login", "QR отримано" if qr else f"код не прийнято: {err}")
             if not qr:
                 await self.bot.send(chat_id, f"❌ Smart Life не прийняв код користувача: {esc(err)}")
                 return
@@ -559,6 +570,7 @@ class App:
                 "QR треба показати з іншого екрана (ноутбук, інший телефон), або збережіть фото й виберіть його "
                 "в сканері з галереї. Чекаю 4 хвилини.")
             info = await asyncio.to_thread(plugmod.wait_login, qr, code)
+            self.diag("tuya_login", "вхід успішний" if info else "QR не відскановано за 4 хв")
             if not info:
                 await self.bot.send(chat_id, "⌛ QR не відскановано. Надішліть <code>/rozetka КОД</code> ще раз.")
                 return
@@ -579,6 +591,7 @@ class App:
                                     buttons=[[{"text": d["name"], "callback_data": f"dev:{d['id']}"}] for d in plugs])
         except Exception as e:
             log.exception("Вхід Smart Life")
+            self.diag("tuya_login", f"виняток: {e}")
             await self.bot.send(chat_id, f"❌ Помилка входу Smart Life: {esc(e)}")
         finally:
             self.login_busy = False
@@ -652,7 +665,8 @@ class App:
                 f"👋 Стежу за графіком відключень для черги <b>{QUEUE}</b> (Київщина): сайт ДТЕК і ваші чати й канали. "
                 "Закріплене повідомлення завжди показує найсвіжіший графік, а при змінах я напишу окремо.\n\n"
                 "/grafik — графік на сьогодні й завтра\n/dzherela — звідки беру графіки\n"
-                "/rozetka КОД — підключити розетку Smart Life (світло є / немає)\n/svitlo — стан світла вдома")
+                "/rozetka КОД — підключити розетку Smart Life (світло є / немає)\n/svitlo — стан світла вдома\n"
+                "/status — стан бота\n/test — приклади сповіщень")
             for iso in self.st["best"]:
                 self.st["announced"][iso] = self.st["best"][iso]["iv"]
             await self.refresh_pin(force_new=True)
@@ -669,10 +683,44 @@ class App:
                                              "Обліковий запис і безпека → Код користувача.")
             else:
                 asyncio.create_task(self.tuya_login(chat_id, code))
+        elif cmd == "/status":
+            await self.bot.send(chat_id, self.status_text())
+        elif cmd == "/test":
+            await self.send_test(chat_id)
         elif cmd == "/svitlo":
             await self.bot.send(chat_id, self.plug_line() or "Розетку ще не підключено: /rozetka КОД")
         else:
             await self.bot.send(chat_id, "Команди: /grafik, /dzherela, /rozetka КОД, /svitlo", silent=True)
+
+    def status_text(self) -> str:
+        d = self.st["diag"]
+        acc = "🟢 підключено" if self.client else "⚪ не підключено (немає SVITLO_SESSION)"
+        if not self.client and "помилка" in d.get("account", ""):
+            acc = "🔴 " + d["account"]
+        t = self.st["tuya"]
+        if t and t.get("device_id"):
+            pl = self.plug_line() or ""
+        elif t:
+            pl = "🟡 вхід виконано, розетку не вибрано"
+        else:
+            pl = "⚪ не підключено — надішліть /rozetka КОД"
+        up = ago(time.time() - self.started)
+        return ("🛠 <b>Стан бота</b>\n\n"
+                f"Працює без перерви: {up}\n"
+                f"🏢 Сайт ДТЕК: {'🟢 дані отримано' if self.st['official'] else '🔴 немає даних'}\n"
+                f"💬 Ваші чати: {acc}\n"
+                f"📍 Джерел у чатах: {sum(1 for i in self.st['chats'].values() if i.get('sched_at'))}\n"
+                f"🔌 Розетка: {pl}")
+
+    async def send_test(self, chat_id):
+        await self.bot.send(chat_id, "🧪 <b>ТЕСТ.</b> Нижче приклади повідомлень, які я надсилатиму. "
+                                     "Дані в них вигадані, справжній графік — у закріпленому повідомленні.", silent=True)
+        await self.bot.send(chat_id, "🧪 ТЕСТ\n⚡ <b>Змінено графік · черга 2.2</b>\n<b>Завтра</b>\n🔴 10:00–14:00\n"
+                                     "🔴 18:00–20:00\nБез світла: 6 год\n<i>Було: 10:00–14:00</i>\nДжерело: Чат вашого селища, 21:47")
+        await self.bot.send(chat_id, "🧪 ТЕСТ\n🔴 <b>Світло зникло</b> ≈ о 18:02. Світло було 4 год 2 хв.\n"
+                                     "За графіком відключення 18:00–20:00.")
+        await self.bot.send(chat_id, "🧪 ТЕСТ\n🟢 <b>Світло з'явилося</b> о 19:56. Не було 1 год 54 хв.")
+        await self.bot.send(chat_id, self.status_text())
 
     def sources_text(self) -> str:
         out = [f"🔎 <b>Джерела графіків для {QUEUE}</b>", ""]
@@ -750,8 +798,16 @@ class App:
             {"command": "grafik", "description": "Графік на сьогодні й завтра"},
             {"command": "svitlo", "description": "Чи є світло вдома (розетка)"},
             {"command": "dzherela", "description": "Звідки беру графіки"},
-            {"command": "rozetka", "description": "Підключити розетку Smart Life: /rozetka КОД"}]})
+            {"command": "rozetka", "description": "Підключити розетку Smart Life: /rozetka КОД"},
+            {"command": "status", "description": "Стан бота і підключень"},
+            {"command": "test", "description": "Приклади сповіщень"}]})
         await self.start_account()
+        marker = BASE / "test_once.txt"
+        if marker.exists() and self.owner and self.st["welcomed"]:
+            tid = marker.read_text().strip()
+            if tid and tid != self.st["test_done"]:
+                self.st["test_done"] = tid
+                await self.send_test(self.owner)
         tasks = [self.updates_loop(), self.official_loop(), self.plug_loop(), self.housekeeping(),
                  self.ensure_successor()]
         if self.client:
