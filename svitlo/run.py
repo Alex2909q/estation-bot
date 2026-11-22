@@ -34,7 +34,8 @@ from store import Store
 BASE = Path(__file__).resolve().parent
 REPO = BASE.parent
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Kyiv"))
-QUEUE = (os.getenv("SVITLO_QUEUE") or "2.2").strip()
+QUEUE = (os.getenv("SVITLO_QUEUE") or "2.2").strip()     # черга власника
+QUEUES = [f"{a}.{b}" for a in range(1, 7) for b in (1, 2)]
 RUN_SECONDS = int(os.getenv("RUN_SECONDS") or 5 * 3600 + 45 * 60)
 OFFICIAL_API = "https://api.github.com/repos/Baskerville42/outage-data-ua/contents/data/kyiv-region.json?ref=main"
 OFFICIAL_RAW = "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/kyiv-region.json"
@@ -142,8 +143,16 @@ class App:
         for k, v in {"owner": None, "offset": None, "pin_id": None, "pin_text": "", "best": {},
                      "announced": {}, "chats": {}, "pending": {}, "official": {}, "tuya": None,
                      "plug": {"online": None, "since": None}, "welcomed": False, "diag": {},
-                     "test_done": ""}.items():
+                     "test_done": "", "users": {}}.items():
             st.setdefault(k, v)
+        # міграція зі старого формату (один користувач, одна черга)
+        if any(k[:2] == "20" for k in st["best"]):
+            st["best"] = {QUEUE: st["best"]}
+        if any(k[:2] == "20" for k in st["official"]):
+            st["official"] = {QUEUE: st["official"]}
+        if st["owner"] and st.get("welcomed") and str(st["owner"]) not in st["users"]:
+            st["users"][str(st["owner"])] = {"queue": QUEUE, "pin_id": st.get("pin_id"),
+                                             "pin_text": st.get("pin_text", ""), "announced": st.get("announced", {})}
         self.st = st
         self.started = time.time()
         self.deadline = self.started + RUN_SECONDS
@@ -165,55 +174,68 @@ class App:
 
     # ---------- графіки ----------
 
-    def offer(self, iso: str, iv: list, pub: float, src: str, link: str | None, kind: str) -> bool:
-        """Новий варіант графіка на дату. Перемагає найсвіжіше опублікований. → чи змінився найкращий."""
+    def offer(self, q: str, iso: str, iv: list, pub: float, src: str, link: str | None, kind: str,
+              public: bool = True) -> bool:
+        """Новий варіант графіка черги q на дату. Перемагає найсвіжіше опублікований. → чи змінився найкращий."""
         if iso < (now().date() - timedelta(days=1)).isoformat():
             return False
-        cur = self.st["best"].get(iso)
-        rec = {"iv": iv, "pub": pub, "src": src, "link": link, "kind": kind}
+        best = self.st["best"].setdefault(q, {})
+        cur = best.get(iso)
+        rec = {"iv": iv, "pub": pub, "src": src, "link": link, "kind": kind, "public": public}
         if cur and cur["pub"] > pub:
             return False
         if cur and cur["pub"] == pub and cur["iv"] == iv:
             return False
-        self.st["best"][iso] = rec
+        best[iso] = rec
         return True
 
-    async def after_change(self, dates: set[str]):
-        today = now().date().isoformat()
-        for iso in sorted(dates):
-            if iso < today:
-                continue
-            rec = self.st["best"][iso]
-            prev = self.st["announced"].get(iso)
-            if prev == rec["iv"]:
-                continue
-            self.st["announced"][iso] = rec["iv"]
-            if self.owner and self.st["welcomed"]:
-                lines = [f"⚡ <b>{'Новий' if prev is None else 'Змінено'} графік · черга {QUEUE}</b>",
-                         f"<b>{day_label(iso)}</b>", parse.fmt_intervals(rec["iv"])]
-                if rec["iv"]:
-                    lines.append(f"Без світла: {parse.total_off(rec['iv'])}")
-                if prev:
-                    lines.append(f"<i>Було: {', '.join(parse.hm(a) + '–' + parse.hm(b) for a, b in prev)}</i>")
-                elif prev == [] and rec["iv"]:
-                    lines.append("<i>Було: без відключень</i>")
-                lines.append(self.src_line(rec))
-                await self.bot.send(self.owner, "\n".join(lines))
-        await self.refresh_pin()
+    def users_with(self, q: str):
+        return [(uid, u) for uid, u in list(self.st["users"].items()) if u.get("queue") == q]
 
-    def src_line(self, rec: dict) -> str:
+    async def after_change(self, changes: dict[str, set[str]]):
+        today = now().date().isoformat()
+        for q, dates in changes.items():
+            for uid, u in self.users_with(q):
+                for iso in sorted(dates):
+                    rec = self.st["best"].get(q, {}).get(iso)
+                    if iso < today or not rec:
+                        continue
+                    ann = u.setdefault("announced", {})
+                    prev = ann.get(iso)
+                    if prev == rec["iv"]:
+                        continue                  # той самий графік — не пишемо
+                    ann[iso] = rec["iv"]
+                    lines = [f"⚡ <b>{'Новий' if prev is None else 'Змінено'} графік · черга {q}</b>",
+                             f"<b>{day_label(iso)}</b>", parse.fmt_intervals(rec["iv"])]
+                    if rec["iv"]:
+                        lines.append(f"Без світла: {parse.total_off(rec['iv'])}")
+                    if prev:
+                        lines.append(f"<i>Було: {', '.join(parse.hm(a) + '–' + parse.hm(b) for a, b in prev)}</i>")
+                    elif prev == [] and rec["iv"]:
+                        lines.append("<i>Було: без відключень</i>")
+                    lines.append(self.src_line(rec, uid))
+                    await self.send_user(uid, "\n".join(lines))
+                await self.refresh_pin(uid)
+
+    def is_owner_id(self, uid) -> bool:
+        return bool(self.owner) and str(uid) == str(self.owner)
+
+    def src_line(self, rec: dict, uid=None) -> str:
         t = datetime.fromtimestamp(rec["pub"], TZ)
         when = f"{t:%H:%M}" if t.date() == now().date() else f"{t:%d.%m %H:%M}"
+        if rec.get("kind") == "chat" and not rec.get("public", True) and not self.is_owner_id(uid):
+            return f"Джерело: місцевий чат Київщини, {when}"
         name = esc(rec["src"])
         if rec.get("link"):
             name = f'<a href="{esc(rec["link"])}">{name}</a>'
         return f"Джерело: {name}, {when}"
 
-    def now_line(self) -> str:
+    def now_line(self, q: str) -> str:
         n = now()
         mins = n.hour * 60 + n.minute
-        today = self.st["best"].get(n.date().isoformat())
-        tomorrow = self.st["best"].get((n.date() + timedelta(days=1)).isoformat())
+        best = self.st["best"].get(q, {})
+        today = best.get(n.date().isoformat())
+        tomorrow = best.get((n.date() + timedelta(days=1)).isoformat())
         if not today:
             return "💡 На сьогодні графіка немає"
         for a, b in today["iv"]:
@@ -235,54 +257,68 @@ class App:
         since = datetime.fromtimestamp(p["since"], TZ).strftime("%H:%M") if p["since"] else "?"
         return f"🔌 Вдома: {'🟢 світло є' if p['online'] else '🔴 світла немає'} (з {since})"
 
-    def schedule_text(self) -> str:
+    def schedule_text(self, uid) -> str:
         n = now()
-        out = [f"📅 <b>Черга {QUEUE} · Київщина</b>", ""]
+        u = self.st["users"].get(str(uid)) or {}
+        q = u.get("queue") or QUEUE
+        out = [f"📅 <b>Черга {q} · Київщина</b>", ""]
         for i in (0, 1):
             iso = (n.date() + timedelta(days=i)).isoformat()
-            rec = self.st["best"].get(iso)
+            rec = self.st["best"].get(q, {}).get(iso)
             out.append(f"<b>{day_label(iso)}</b>")
             if rec:
                 out.append(parse.fmt_intervals(rec["iv"]))
                 if rec["iv"]:
                     out.append(f"Без світла: {parse.total_off(rec['iv'])}")
-                out.append(f"<i>{self.src_line(rec)}</i>")
+                out.append(f"<i>{self.src_line(rec, uid)}</i>")
             else:
                 out.append("Графіка ще немає")
             out.append("")
         if self.st.get("emergency"):
             out.append("🚨 <b>ДТЕК: діють екстрені відключення, графіки не діють</b>")
+        owner = self.is_owner_id(uid)
         addr = self.st.get("addr_outage")
-        if addr:
+        if addr and owner:
             out.append(f"⚠️ {esc(addr)}")
-        out.append(self.now_line())
-        pl = self.plug_line()
+        out.append(self.now_line(q))
+        pl = self.plug_line() if owner else None
         if pl:
             out.append(pl)
-        out.append(f"\n<i>Оновлено {n:%H:%M}</i>")
+        out.append(f"\n<i>Оновлено {n:%H:%M} · змінити чергу: /cherga</i>")
         return "\n".join(out)
 
-    async def refresh_pin(self, force_new: bool = False):
-        if not self.owner:
+    async def send_user(self, uid, text: str, buttons=None, silent=False) -> dict:
+        res = await self.bot.send(uid, text, buttons=buttons, silent=silent)
+        desc = str(res.get("description", "")).lower()
+        if not res.get("ok") and ("blocked" in desc or "deactivated" in desc or "chat not found" in desc):
+            self.st["users"].pop(str(uid), None)        # користувач заблокував бота
+        return res
+
+    async def refresh_pin(self, uid=None, force_new: bool = False):
+        if uid is None:
+            for u in list(self.st["users"]):
+                await self.refresh_pin(u)
             return
-        text = self.schedule_text()
-        body = re.sub(r"Оновлено \d\d:\d\d", "", text)
-        if not force_new and self.st["pin_id"] and body == re.sub(r"Оновлено \d\d:\d\d", "", self.st["pin_text"]):
+        u = self.st["users"].get(str(uid))
+        if not u or not u.get("queue"):
             return
-        if self.st["pin_id"] and not force_new:
+        text = self.schedule_text(uid)
+        strip = lambda t: re.sub(r"Оновлено \d\d:\d\d", "", t or "")
+        if not force_new and u.get("pin_id") and strip(text) == strip(u.get("pin_text")):
+            return
+        if u.get("pin_id") and not force_new:
             res = await self.bot.call("editMessageText", {
-                "chat_id": self.owner, "message_id": self.st["pin_id"], "text": text, "parse_mode": "HTML",
+                "chat_id": uid, "message_id": u["pin_id"], "text": text, "parse_mode": "HTML",
                 "link_preview_options": {"is_disabled": True}})
             if res.get("ok") or "not modified" in str(res.get("description", "")):
-                self.st["pin_text"] = text
+                u["pin_text"] = text
                 return
-        res = await self.bot.send(self.owner, text, silent=True)
+        res = await self.send_user(uid, text, silent=True)
         if res.get("ok"):
             mid = res["result"]["message_id"]
-            await self.bot.call("unpinAllChatMessages", {"chat_id": self.owner})
-            await self.bot.call("pinChatMessage", {"chat_id": self.owner, "message_id": mid,
-                                                   "disable_notification": True})
-            self.st["pin_id"], self.st["pin_text"] = mid, text
+            await self.bot.call("unpinAllChatMessages", {"chat_id": uid})
+            await self.bot.call("pinChatMessage", {"chat_id": uid, "message_id": mid, "disable_notification": True})
+            u["pin_id"], u["pin_text"] = mid, text
 
     # ---------- офіційне джерело ----------
 
@@ -304,19 +340,21 @@ class App:
             data = await asyncio.to_thread(self._fetch_official)
             self.diag("official", "ok" if data else "помилка завантаження")
             if data:
-                dates, updated = parse.parse_official(data, TZ, QUEUE)
-                changed = set()
+                changed: dict[str, set[str]] = {}
                 async with self.lock:
-                    for iso, iv in dates.items():
-                        prev = self.st["official"].get(iso)
-                        pub = updated.timestamp() if updated else time.time()
-                        if prev and prev["iv"] != iv and pub <= prev["pub"]:
-                            pub = time.time()        # зміст змінився, а час на сайті ні
-                        if prev and prev["iv"] == iv:
-                            pub = prev["pub"]
-                        self.st["official"][iso] = {"iv": iv, "pub": pub}
-                        if self.offer(iso, iv, pub, OFFICIAL_NAME, OFFICIAL_LINK, "official"):
-                            changed.add(iso)
+                    for q in QUEUES:
+                        dates, updated = parse.parse_official(data, TZ, q)
+                        off = self.st["official"].setdefault(q, {})
+                        for iso, iv in dates.items():
+                            prev = off.get(iso)
+                            pub = updated.timestamp() if updated else time.time()
+                            if prev and prev["iv"] != iv and pub <= prev["pub"]:
+                                pub = time.time()        # зміст змінився, а час на сайті ні
+                            if prev and prev["iv"] == iv:
+                                pub = prev["pub"]
+                            off[iso] = {"iv": iv, "pub": pub}
+                            if self.offer(q, iso, iv, pub, OFFICIAL_NAME, OFFICIAL_LINK, "official"):
+                                changed.setdefault(q, set()).add(iso)
                     if changed:
                         await self.after_change(changed)
                 await self.check_attention(data.get("attention"))
@@ -326,7 +364,7 @@ class App:
         """Віконце «Шановні клієнти!» на сайті ДТЕК (екстрені відключення тощо)."""
         text = (att or {}).get("text") if isinstance(att, dict) else (att if isinstance(att, str) else None)
         text = (text or "").strip()
-        if not (self.owner and self.st["welcomed"]):
+        if not self.st["users"]:
             return
         h = hashlib.sha256(text.encode()).hexdigest()[:16] if text else ""
         if h == self.st.get("attention", ""):
@@ -337,15 +375,16 @@ class App:
         self.st["emergency"] = cls["emergency"]
         new_local = [x for x in cls["local"] if x not in self.st.get("notice_local", [])]
         self.st["notice_local"] = cls["local"]
-        if cls["emergency"] and not was:
-            await self.bot.send(self.owner, "🚨 <b>ДТЕК: екстрені відключення — графіки зараз не діють</b>\n\n"
-                                            f"{esc(text[:3000])}")
+        if cls["emergency"] != was:
+            msg = ("🚨 <b>ДТЕК: екстрені відключення — графіки зараз не діють</b>\n\n" + esc(text[:3000])
+                   if cls["emergency"] else
+                   "✅ <b>ДТЕК: екстрені відключення скасовано</b>, знову діють графіки.\n"
+                   "Актуальний графік — у закріпленому повідомленні.")
+            for uid in list(self.st["users"]):
+                await self.send_user(uid, msg)
+                await asyncio.sleep(0.05)
             await self.refresh_pin()
-        elif was and not cls["emergency"]:
-            await self.bot.send(self.owner, "✅ <b>ДТЕК: екстрені відключення скасовано</b>, знову діють графіки.\n"
-                                            "Актуальний графік — у закріпленому повідомленні.")
-            await self.refresh_pin()
-        if new_local:
+        if new_local and self.owner:
             await self.bot.send(self.owner, "⚠️ <b>ДТЕК: аварія поруч</b>\n\n" + esc("\n".join(new_local)[:3000]))
 
     # ---------- Telegram-акаунт: чати й канали ----------
@@ -412,7 +451,7 @@ class App:
             self.st["addr_outage"] = f"ДТЕК за вашою адресою ({n:%H:%M}): {first}"
         if self.owner:
             await self.bot.send(self.owner, f"🏠 <b>ДТЕК за вашою адресою</b>\n\n{esc(text[:3500])}")
-            await self.refresh_pin()
+            await self.refresh_pin(self.owner)
 
     def link_for(self, chat, msg_id: int) -> str | None:
         uname = getattr(chat, "username", None)
@@ -424,7 +463,7 @@ class App:
 
     async def handle_message(self, chat, msg):
         text = getattr(msg, "message", "") or ""
-        if len(text) < 8 or not (QUEUE in text or "черг" in text.lower() or parse.NO_OUTAGE.search(text)):
+        if len(text) < 8 or not (parse.QUEUE.search(text) or "черг" in text.lower() or parse.NO_OUTAGE.search(text)):
             return
         from telethon import utils
         cid = str(utils.get_peer_id(chat))
@@ -441,32 +480,37 @@ class App:
         if info.get("trusted") is False:
             return
         link = self.link_for(chat, msg.id)
-        res = parse.parse_text(text, pub_dt, QUEUE, trusted=bool(info.get("trusted")))
-        changed = set()
+        public = bool(getattr(chat, "username", None))
+        trusted = bool(info.get("trusted"))
+        results = {q: parse.parse_text(text, pub_dt, q, trusted=trusted) for q in QUEUES}
+        found = {q: r["dates"] for q, r in results.items() if r["dates"]}
+        region = next((r["region"] for r in results.values() if r["region"]), None)
+        changed: dict[str, set[str]] = {}
         async with self.lock:
-            if res["dates"]:
+            if found:
                 info["sched_at"] = pub_dt.timestamp()
-                if res["region"] == "kr":
+                if region == "kr":
                     info["kr_at"] = pub_dt.timestamp()
-                for iso, iv in res["dates"].items():
-                    if self.offer(iso, iv, pub_dt.timestamp(), title, link, "chat"):
-                        changed.add(iso)
+                for q, dates in found.items():
+                    for iso, iv in dates.items():
+                        if self.offer(q, iso, iv, pub_dt.timestamp(), title, link, "chat", public):
+                            changed.setdefault(q, set()).add(iso)
                 if changed:
-                    log.info("Новий графік з «%s»: %s", title, res["dates"])
+                    log.info("Новий графік з «%s»: %s", title, {q: sorted(d) for q, d in changed.items()})
                     await self.after_change(changed)
-            elif info.get("trusted") is None and res["region"] != "other":
+            elif info.get("trusted") is None and region != "other":
                 alt = parse.parse_text(text, pub_dt, QUEUE, trusted=True)
                 if alt["dates"]:
                     pend = self.st["pending"].setdefault(cid, [])
-                    pend.append({"text": text[:3000], "ts": pub_dt.timestamp(), "link": link})
+                    pend.append({"text": text[:3000], "ts": pub_dt.timestamp(), "link": link, "public": public})
                     del pend[:-5]
                     if not info.get("asked") and self.owner:
                         info["asked"] = True
                         sample = esc(text[:400])
                         await self.bot.send(
                             self.owner,
-                            f"🔎 У чаті <b>{esc(title)}</b> публікують графіки для {QUEUE}, але без назви регіону:\n\n"
-                            f"<i>{sample}</i>\n\nЦе чат вашого населеного пункту на Київщині? Брати графіки звідси?",
+                            f"🔎 У чаті <b>{esc(title)}</b> публікують графіки, але без назви регіону:\n\n"
+                            f"<i>{sample}</i>\n\nЦе чат населеного пункту на Київщині? Брати графіки звідси?",
                             buttons=[[{"text": "✅ Так, брати", "callback_data": f"src:1:{cid}"},
                                       {"text": "❌ Ні", "callback_data": f"src:0:{cid}"}]])
 
@@ -475,13 +519,14 @@ class App:
         if not info:
             return
         info["trusted"] = ok
-        changed = set()
+        changed: dict[str, set[str]] = {}
         if ok:
             for p in self.st["pending"].pop(cid, []):
-                res = parse.parse_text(p["text"], datetime.fromtimestamp(p["ts"], TZ), QUEUE, trusted=True)
-                for iso, iv in res["dates"].items():
-                    if self.offer(iso, iv, p["ts"], info["title"], p.get("link"), "chat"):
-                        changed.add(iso)
+                for q in QUEUES:
+                    res = parse.parse_text(p["text"], datetime.fromtimestamp(p["ts"], TZ), q, trusted=True)
+                    for iso, iv in res["dates"].items():
+                        if self.offer(q, iso, iv, p["ts"], info["title"], p.get("link"), "chat", p.get("public", False)):
+                            changed.setdefault(q, set()).add(iso)
         else:
             self.st["pending"].pop(cid, None)
         if changed:
@@ -492,7 +537,7 @@ class App:
         if not self.client:
             return
         since = now() - timedelta(hours=hours)
-        for q in (QUEUE, "черга", "графік відключень"):
+        for q in ("черга", "графік відключень", "Київщина"):
             try:
                 async for m in self.client.iter_messages(None, search=q, limit=300):
                     if m.date.astimezone(TZ) < since:
@@ -573,7 +618,7 @@ class App:
             return
         p["online"], old_since, p["since"] = online, p["since"], ts
         if prev is None:
-            await self.refresh_pin()
+            await self.refresh_pin(self.owner)
             return
         n = now()
         lasted = f" Не було {ago(ts - old_since)}." if online and old_since else ""
@@ -581,7 +626,7 @@ class App:
             text = f"🟢 <b>Світло з'явилося</b> о {n:%H:%M}.{lasted}"
         else:
             mins = n.hour * 60 + n.minute
-            today = self.st["best"].get(n.date().isoformat())
+            today = self.st["best"].get(QUEUE, {}).get(n.date().isoformat())
             plan = None
             if today:
                 plan = next(((a, b) for a, b in today["iv"] if a - 15 <= mins < b), None)
@@ -590,7 +635,7 @@ class App:
             on_for = f" Світло було {ago(ts - old_since)}." if old_since else ""
             text = f"🔴 <b>Світло зникло</b> ≈ о {n:%H:%M}.{on_for}{note}"
         await self.bot.send(self.owner, text)
-        await self.refresh_pin()
+        await self.refresh_pin(self.owner)
 
     async def tuya_login(self, chat_id, code: str):
         if self.login_busy:
@@ -667,17 +712,31 @@ class App:
                 except Exception:
                     log.exception("Обробка команди")
 
-    def is_owner(self, uid) -> bool:
-        return not self.owner or str(uid) == str(self.owner)
+    def queue_buttons(self):
+        rows = []
+        for a in range(1, 7):
+            rows.append([{"text": f"{a}.{b}", "callback_data": f"q:{a}.{b}"} for b in (1, 2)])
+        return rows
+
+    async def set_queue(self, uid, q: str):
+        u = self.st["users"].setdefault(str(uid), {})
+        u["queue"] = q
+        u["announced"] = {iso: r["iv"] for iso, r in self.st["best"].get(q, {}).items()}
+        await self.send_user(uid, f"✅ Ваша черга: <b>{q}</b>. Закріпив актуальний графік — він оновлюється сам, "
+                                  "а коли графік зміниться, я напишу окремо.", silent=True)
+        await self.refresh_pin(uid, force_new=True)
 
     async def handle_update(self, upd: dict):
         if "callback_query" in upd:
             cq = upd["callback_query"]
             uid = cq["from"]["id"]
             await self.bot.call("answerCallbackQuery", {"callback_query_id": cq["id"]})
-            if not self.is_owner(uid):
-                return
             data = cq.get("data", "")
+            if data.startswith("q:") and data[2:] in QUEUES:
+                await self.set_queue(uid, data[2:])
+                return
+            if not self.is_owner_id(uid):
+                return
             if data.startswith("src:"):
                 _, ok, cid = data.split(":", 2)
                 await self.apply_trust(cid, ok == "1")
@@ -692,45 +751,56 @@ class App:
         text = (msg.get("text") or "").strip()
         if not chat_id or msg.get("chat", {}).get("type") != "private":
             return
-        if not self.is_owner(uid):
-            await self.bot.send(chat_id, "Це особистий бот.")
-            return
-        if not self.st["owner"]:
-            self.st["owner"] = uid
+        if not self.st["owner"] and not self.st["users"]:
+            self.st["owner"] = uid                       # перший користувач — власник
+        owner = self.is_owner_id(uid)
+        u = self.st["users"].get(str(uid))
         cmd, _, arg = text.partition(" ")
         cmd = cmd.split("@")[0].lower()
-        if cmd == "/start" or not self.st["welcomed"]:
+        q_typed = text.replace(",", ".").strip()
+        if q_typed in QUEUES:
+            await self.set_queue(uid, q_typed)
+            return
+        if cmd == "/start" or not u or not u.get("queue"):
             self.st["welcomed"] = True
-            await self.bot.send(chat_id,
-                f"👋 Стежу за графіком відключень для черги <b>{QUEUE}</b> (Київщина): сайт ДТЕК і ваші чати й канали. "
-                "Закріплене повідомлення завжди показує найсвіжіший графік, а при змінах я напишу окремо.\n\n"
-                "/grafik — графік на сьогодні й завтра\n/dzherela — звідки беру графіки\n"
-                "/rozetka КОД — підключити розетку Smart Life (світло є / немає)\n/svitlo — стан світла вдома\n"
-                "/status — стан бота\n/test — приклади сповіщень")
-            for iso in self.st["best"]:
-                self.st["announced"][iso] = self.st["best"][iso]["iv"]
-            await self.refresh_pin(force_new=True)
+            await self.send_user(uid,
+                "👋 Я показую <b>найсвіжіший графік відключень світла на Київщині</b> для вашої черги.\n\n"
+                "Беру графік із сайту ДТЕК Київські регіональні електромережі й з Telegram-каналів і чатів, "
+                "де його публікують раніше. Перемагає той, що опублікований найпізніше. "
+                "Закріплене повідомлення завжди показує актуальний графік, а коли він зміниться, я напишу окремо. "
+                "Однаковий графік повторно не надсилаю.\n\n"
+                "<b>Оберіть вашу чергу (підчергу):</b>\n"
+                "<i>Її можна дізнатися на dtek-krem.com.ua/ua/shutdowns за вашою адресою.</i>",
+                buttons=self.queue_buttons())
             return
         if cmd in ("/grafik", "/графік", "графік"):
-            await self.bot.send(chat_id, self.schedule_text())
-            await self.refresh_pin()
-        elif cmd == "/dzherela":
+            await self.send_user(uid, self.schedule_text(uid))
+            await self.refresh_pin(uid)
+        elif cmd == "/cherga":
+            await self.send_user(uid, "Оберіть чергу:", buttons=self.queue_buttons())
+        elif cmd == "/stop":
+            self.st["users"].pop(str(uid), None)
+            await self.bot.call("unpinAllChatMessages", {"chat_id": uid})
+            await self.bot.send(uid, "Більше не надсилатиму графіки. Повернутися: /start", silent=True)
+        elif owner and cmd == "/dzherela":
             await self.bot.send(chat_id, self.sources_text())
-        elif cmd == "/rozetka":
+        elif owner and cmd == "/rozetka":
             code = arg.strip()
             if not code:
                 await self.bot.send(chat_id, "Надішліть <code>/rozetka КОД</code>. Код: Smart Life → Я → ⚙️ → "
                                              "Обліковий запис і безпека → Код користувача.")
             else:
                 asyncio.create_task(self.tuya_login(chat_id, code))
-        elif cmd == "/status":
+        elif owner and cmd == "/status":
             await self.bot.send(chat_id, self.status_text())
-        elif cmd == "/test":
+        elif owner and cmd == "/test":
             await self.send_test(chat_id)
-        elif cmd == "/svitlo":
+        elif owner and cmd == "/svitlo":
             await self.bot.send(chat_id, self.plug_line() or "Розетку ще не підключено: /rozetka КОД")
         else:
-            await self.bot.send(chat_id, "Команди: /grafik, /dzherela, /rozetka КОД, /svitlo", silent=True)
+            extra = "\n/svitlo, /status, /dzherela, /rozetka КОД" if owner else ""
+            await self.send_user(uid, "Команди: /grafik — графік, /cherga — змінити чергу, /stop — відписатися" + extra,
+                                 silent=True)
 
     def status_text(self) -> str:
         d = self.st["diag"]
@@ -747,6 +817,7 @@ class App:
         up = ago(time.time() - self.started)
         return ("🛠 <b>Стан бота</b>\n\n"
                 f"Працює без перерви: {up}\n"
+                f"👥 Користувачів: {len(self.st['users'])}\n"
                 f"🏢 Сайт ДТЕК: {'🟢 дані отримано' if self.st['official'] else '🔴 немає даних'}\n"
                 f"💬 Ваші чати: {acc}\n"
                 f"📍 Джерел у чатах: {sum(1 for i in self.st['chats'].values() if i.get('sched_at'))}\n"
@@ -792,9 +863,14 @@ class App:
         while True:
             await asyncio.sleep(60)
             cutoff = (now().date() - timedelta(days=2)).isoformat()
-            for k in ("best", "announced", "official"):
-                for iso in [d for d in self.st[k] if d < cutoff]:
-                    del self.st[k][iso]
+            for k in ("best", "official"):
+                for q in self.st[k].values():
+                    for iso in [d for d in q if d < cutoff]:
+                        del q[iso]
+            for u in self.st["users"].values():
+                ann = u.get("announced", {})
+                for iso in [d for d in ann if d < cutoff]:
+                    del ann[iso]
             if len(self.seen) > 20000:
                 self.seen.clear()
             await self.refresh_pin()
@@ -836,11 +912,23 @@ class App:
         log.info("Бот @%s запущено, черга %s", me["result"]["username"], QUEUE)
         await self.bot.call("setMyCommands", {"commands": [
             {"command": "grafik", "description": "Графік на сьогодні й завтра"},
-            {"command": "svitlo", "description": "Чи є світло вдома (розетка)"},
-            {"command": "dzherela", "description": "Звідки беру графіки"},
-            {"command": "rozetka", "description": "Підключити розетку Smart Life: /rozetka КОД"},
-            {"command": "status", "description": "Стан бота і підключень"},
-            {"command": "test", "description": "Приклади сповіщень"}]})
+            {"command": "cherga", "description": "Змінити чергу"},
+            {"command": "stop", "description": "Відписатися"}]})
+        if self.owner:
+            await self.bot.call("setMyCommands", {"scope": {"type": "chat", "chat_id": int(self.owner)}, "commands": [
+                {"command": "grafik", "description": "Графік на сьогодні й завтра"},
+                {"command": "svitlo", "description": "Чи є світло вдома (розетка)"},
+                {"command": "status", "description": "Стан бота і підключень"},
+                {"command": "dzherela", "description": "Звідки беру графіки"},
+                {"command": "cherga", "description": "Змінити чергу"},
+                {"command": "rozetka", "description": "Підключити розетку Smart Life: /rozetka КОД"},
+                {"command": "test", "description": "Приклади сповіщень"}]})
+        await self.bot.call("setMyShortDescription", {"short_description":
+            "Найсвіжіший графік відключень світла на Київщині для вашої черги (1.1–6.2)."})
+        await self.bot.call("setMyDescription", {"description":
+            "Показую актуальний графік відключень світла на Київщині для вашої черги: сайт ДТЕК + Telegram-канали, "
+            "де графіки з'являються раніше. Закріплене повідомлення оновлюється саме, при зміні графіка — сповіщення. "
+            "Натисніть «Почати» й оберіть чергу."})
         await self.start_account()
         marker = BASE / "test_once.txt"
         if marker.exists() and self.owner and self.st["welcomed"]:
