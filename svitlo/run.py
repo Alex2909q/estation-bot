@@ -160,6 +160,7 @@ class App:
         self.me_id = None
         self.seen: set[str] = set()
         self.plug = None
+        self.plug_ev = None
         self.plug_errors = 0
         self.plug_err_notified = False
         self.login_busy = False
@@ -584,24 +585,38 @@ class App:
             self.st["tuya"]["token"] = token_info
 
     async def plug_loop(self):
+        """Стан розетки — за подіями хмари Tuya (online/offline), як у застосунку Smart Life.
+        Запит стану через API лише перевіряє, що доступ до хмари працює: його поле online запізнюється."""
+        loop = asyncio.get_running_loop()
+
+        def cb(online: bool, why: str):
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.plug_event(online, why)))
+
         while True:
             t = self.st["tuya"]
             if t and t.get("device_id") and self.owner:
                 try:
+                    if self.plug_ev is None or not self.plug_ev.alive():
+                        if self.plug_ev:
+                            self.plug_ev.stop()
+                        ev = plugmod.PlugEvents(t, self._save_token, cb)
+                        await asyncio.to_thread(ev.start)
+                        self.plug_ev = ev
+                        self.diag("plug", f"події підключено, стан при старті online={ev.initial}")
+                        if self.st["plug"]["online"] is None and ev.initial is not None:
+                            await self.plug_state(ev.initial)
                     if self.plug is None:
                         self.plug = plugmod.Plug(t, self._save_token)
-                    online = await asyncio.to_thread(self.plug.online, t["device_id"])
-                    if online is None:
-                        raise RuntimeError("немає даних про пристрій")
+                    await asyncio.to_thread(self.plug.online, t["device_id"])     # перевірка доступу
                     self.plug_errors = 0
-                    self.diag("plug", f"ok, online={online}")
                     if self.plug_err_notified:
                         self.plug_err_notified = False
                         await self.bot.send(self.owner, "🔌 Зв'язок із хмарою Smart Life відновлено.", silent=True)
-                    await self.plug_state(online)
                 except Exception as e:
                     self.plug_errors += 1
                     self.plug = None
+                    if self.plug_ev and not self.plug_ev.alive():
+                        self.plug_ev = None
                     log.warning("Розетка: %s", e)
                     self.diag("plug", f"помилка: {e}")
                     if self.plug_errors == 10 and not self.plug_err_notified:
@@ -609,6 +624,11 @@ class App:
                         await self.bot.send(self.owner, "⚠️ 10 хвилин не можу отримати стан розетки з хмари Smart Life. "
                                             f"Якщо це триває, увійдіть ще раз: <code>/rozetka КОД</code> ({esc(e)})")
             await asyncio.sleep(60)
+
+    async def plug_event(self, online: bool, why: str):
+        if why.startswith("подія"):
+            self.diag("plug_event", f"online={online} ({why})")
+        await self.plug_state(online)
 
     async def plug_state(self, online: bool):
         p = self.st["plug"]
@@ -688,6 +708,9 @@ class App:
         t["device_id"] = dev_id
         name = (t.get("devices") or {}).get(dev_id, dev_id)
         self.st["plug"] = {"online": None, "since": None}
+        if self.plug_ev:
+            self.plug_ev.stop()
+            self.plug_ev = None
         await self.bot.send(chat_id, f"✅ Відстежую розетку «{esc(name)}». Перевірка щохвилини: "
                                      "напишу, коли світло зникне або з'явиться.")
 
@@ -949,6 +972,8 @@ class App:
             await asyncio.to_thread(self.store.save, self.st)
             if self.client:
                 await self.client.disconnect()
+            if self.plug_ev:
+                self.plug_ev.stop()
 
 
 if __name__ == "__main__":

@@ -76,3 +76,58 @@ class Plug:
         if not items:
             return None
         return bool(items[0].get("online"))
+
+
+class PlugEvents:
+    """Миттєві події від хмари Tuya (MQTT) — так само, як їх отримує застосунок Smart Life.
+
+    on_online(bool, причина) викликається з потоку MQTT.
+    """
+
+    def __init__(self, cfg: dict, on_token, on_online):
+        from tuya_sharing import Manager
+        from tuya_sharing.customerapi import SharingTokenListener
+
+        class _L(SharingTokenListener):
+            def update_token(self, token_info):
+                on_token(token_info)
+
+        self.cfg = cfg
+        self.dev = cfg["device_id"]
+        self.on_online = on_online
+        self.manager = Manager(CLIENT_ID, cfg["user_code"], cfg.get("terminal_id") or "", cfg["endpoint"],
+                               cfg["token"], _L())
+        self.initial = None
+        self.last_event = 0.0
+
+    def start(self):
+        self.manager.update_device_cache()
+        dev = self.manager.device_map.get(self.dev)
+        self.initial = None if dev is None else bool(dev.online)
+        self.manager.refresh_mq()
+        self.manager.mq.add_message_listener(self._msg)
+
+    def alive(self) -> bool:
+        mq = self.manager.mq
+        return bool(mq and mq.is_alive())
+
+    def _msg(self, msg: dict):
+        try:
+            data = msg.get("data") or {}
+            proto = msg.get("protocol")
+            if proto == 20 and data.get("bizCode") in ("online", "offline"):
+                if (data.get("bizData") or {}).get("devId") == self.dev:
+                    self.last_event = time.time()
+                    self.on_online(data["bizCode"] == "online", "подія " + data["bizCode"])
+            elif proto == 4 and data.get("devId") == self.dev:
+                self.last_event = time.time()
+                self.on_online(True, "звіт пристрою")
+        except Exception as e:
+            log.warning("Tuya MQ: %s", e)
+
+    def stop(self):
+        try:
+            if self.manager.mq:
+                self.manager.mq.stop()
+        except Exception:
+            pass
