@@ -76,6 +76,18 @@ jobs:
       - name: Check channels
         run: python github_run.py
 
+      - name: Exam 1843 — талони на практичний іспит (раз на 15 хв)
+        if: env.TG_SESSION != '' && hashFiles('exam/watch.py') != ''
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          EXAM_SESSION: ${{ secrets.TG_SESSION }}
+          EXAM_TALON_BOT: ${{ secrets.EXAM_TALON_BOT }}
+          EXAM_RECIPIENT: "Голубоглазка Оля"
+          EXAM_INTERVAL_MIN: "15"
+          EXAM_DRY_RUN: ${{ vars.EXAM_DRY_RUN }}
+        run: python exam/watch.py --once
+
       - name: Save state
         if: always() && hashFiles('state/changed') != ''
         uses: actions/cache/save@v4

@@ -11,7 +11,7 @@
 
 Налаштування (Secrets / змінні середовища)
 ------------------------------------------
-  EXAM_SESSION     (обов'язково) "api_id:api_hash:сесія" — ОКРЕМА сесія, створена make_session.command.
+  EXAM_SESSION     "api_id:api_hash:сесія" — у Monitor це та сама TG_SESSION (крок іде після перевірки каналів, не одночасно).
                    Не використовуйте ту саму TG_SESSION, що й Monitor: одна сесія одночасно з двох
                    серверів Telegram відкликає (AUTH_KEY_DUPLICATED).
   EXAM_RECIPIENT   кому слати; ім'я контакту, @username або телефон. Типово «Голубоглазка Оля».
@@ -156,6 +156,66 @@ class Watcher:
         log.info("Надіслано сповіщення (повідомлення ТалонБота №%s)%s", m.id, " [тест]" if self.dry else "")
 
 
+STATE_FILE = Path(__file__).resolve().parent.parent / "state" / "exam.json"
+
+
+async def once() -> int:
+    """Одна перевірка — для кроку у workflow Monitor (той уже працює кожні ~2 хв із TG_SESSION).
+    Сама перевірка — не частіше, ніж раз на EXAM_INTERVAL_MIN. Помилки не валять Monitor."""
+    import json
+
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+    from telethon.tl.types import InputPeerUser
+
+    try:
+        st = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        st = {}
+    interval = int(env("EXAM_INTERVAL_MIN", "15") or 15) * 60
+    if time.time() - st.get("last_check", 0) < interval - 30:
+        log.info("Exam 1843: наступна перевірка через %s с", int(interval - (time.time() - st.get("last_check", 0))))
+        return 0
+
+    api_id, api_hash, session = creds()
+    client = TelegramClient(StringSession(session), api_id, api_hash, device_model="EStation GitHub")
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            log.warning("Exam 1843: сесія недійсна")
+            return 0
+        w = Watcher(client)
+        key = "test" if w.dry else "live"
+        peers = st.setdefault("peers", {})
+        try:
+            p = peers.get("bot")
+            w.bot = InputPeerUser(p[0], p[1]) if p else await w.find_bot()
+            p = peers.get(key)
+            w.to = InputPeerUser(p[0], p[1]) if p else await w.find_recipient()
+        except SystemExit as e:                          # ТалонБот ще не налаштований / контакт не знайдено
+            log.warning("Exam 1843: %s", e)
+            st["last_check"] = time.time()
+            st["problem"] = str(e)
+            return 0
+        for name, ent in (("bot", w.bot), (key, w.to)):
+            if name not in peers:
+                ip = await client.get_input_entity(ent)
+                peers[name] = [ip.user_id, ip.access_hash]
+        await w.restore()
+        await w.check()
+        st["last_check"] = time.time()
+        st.pop("problem", None)
+        HEALTH_FILE.write_text("ok")
+    except Exception as e:
+        log.warning("Exam 1843: перевірка не вдалася: %s", e)
+    finally:
+        await client.disconnect()
+        STATE_FILE.parent.mkdir(exist_ok=True)
+        STATE_FILE.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        (STATE_FILE.parent / "changed").write_text("1")
+    return 0
+
+
 async def main() -> None:
     from telethon import TelegramClient
     from telethon.sessions import StringSession
@@ -190,4 +250,6 @@ async def main() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", stream=sys.stdout)
+    if "--once" in sys.argv:
+        sys.exit(asyncio.run(once()))
     asyncio.run(main())
